@@ -1,0 +1,42 @@
+roles:
+  image_caption:
+    desc: 普通图文对，适合 PT
+
+  long_caption:
+    desc: 长图像描述，适合 PT/MT
+
+  short_caption:
+    desc: 短图像描述，适合 PT
+
+  chinese_image_caption:
+    desc: 中文图文对，适合中文能力保留
+
+  image_pool:
+    desc: 只提供图片底座，本身不一定直接训练
+
+  instruction_conversation:
+    desc: 图像指令对话，适合 MT/SFT
+
+  caption_conversation:
+    desc: 既有 caption 又有对话
+
+  ocr_vqa:
+    desc: 读图中文字并回答问题
+
+  ocr_caption:
+    desc: 读图中文字并生成描述
+
+  grounding:
+    desc: 根据文本定位图中区域
+
+  visual_reasoning_vqa:
+    desc: 视觉推理问答
+
+  document_vqa:
+    desc: 文档图片问答
+
+  chart_vqa:
+    desc: 图表问答
+
+  detection:
+    desc: 目标检测/物体框

@@ -1,0 +1,26 @@
+stage: generation_pt
+init_mode: checkpoint
+weight_init: random
+model_name_or_path: outputs/pretrain/uw
+tokenizer_name_or_path: outputs/pretrain/uw
+datasets: "blip3o_long_pt,blip3o_short_pt"
+loss_weights:
+  ce: 0.0
+  fm: 1.0
+task_override: t2i
+max_steps: 100000
+output_dir: outputs/pretrain/gen_pt
+deepspeed: configs/deepspeed/zero2.json
+per_device_train_batch_size: 2
+gradient_accumulation_steps: 4
+learning_rate: 1.0e-4
+warmup_steps: 500
+max_seq_length: 8192
+max_pixels: 4194304
+min_pixels: 65536
+gradient_checkpointing: true
+bf16: true
+logging_steps: 10
+save_steps: 5000
+save_total_limit: 2
+dataloader_num_workers: 2

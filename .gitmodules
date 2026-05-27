@@ -1,0 +1,6 @@
+[submodule "third_party/NEO"]
+	path = third_party/NEO
+	url = https://github.com/EvolvingLMMs-Lab/NEO.git
+[submodule "third_party/SenseNova-U1"]
+	path = third_party/SenseNova-U1
+	url = https://github.com/OpenSenseNova/SenseNova-U1.git

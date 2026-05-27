@@ -1,0 +1,29 @@
+# Local datasets and processed JSONL (large files — download/convert locally)
+data/
+
+# Cached / sample downloads under note/
+note/relaion400m/
+
+# Training checkpoints
+outputs/
+
+# Local third_party symlinks (see third_party/README.md)
+third_party/NEO
+third_party/SenseNova-U1
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+
+# HF / tool caches
+.cache/
+
+# Editor / OS
+.DS_Store
+*.swp
+.vscode/

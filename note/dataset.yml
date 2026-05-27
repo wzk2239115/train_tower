@@ -1,0 +1,75 @@
+datasets:
+  laion400m:
+    url: https://huggingface.co/datasets/laion/relaion400m
+    stages: [pt]
+    role: image_caption
+
+  coyo700m:
+    url: https://huggingface.co/datasets/kakaobrain/coyo-700m
+    stages: [pt]
+    role: image_caption
+
+  blip3o_long:
+    url: https://huggingface.co/datasets/BLIP3o/BLIP3o-Pretrain-Long-Caption
+    stages: [pt, mt]
+    role: long_caption
+
+  blip3o_short:
+    url: https://huggingface.co/datasets/BLIP3o/BLIP3o-Pretrain-Short-Caption
+    stages: [pt, mt]
+    role: short_caption
+
+  coco2017:
+    url: https://opendatalab.com/OpenDataLab/COCO_2017
+    stages: [pt, mt, sft]
+    role: image_pool
+
+  openimages:
+    url: https://storage.googleapis.com/openimages/web/download_v7.html
+    stages: [pt, mt]
+    role: image_caption_detection
+
+  wukong:
+    url: https://huggingface.co/datasets/wanng/wukong100m
+    stages: [pt]
+    role: chinese_image_caption
+
+  sharegpt4v:
+    url: https://huggingface.co/datasets/Lin-Chen/ShareGPT4V
+    stages: [mt, sft]
+    role: caption_conversation
+
+  llava150k:
+    url: https://huggingface.co/datasets/liuhaotian/LLaVA-Instruct-150K
+    stages: [mt, sft]
+    role: instruction_conversation
+
+  refcoco:
+    url: https://huggingface.co/datasets/lmms-lab/RefCOCO
+    stages: [mt, sft]
+    role: grounding
+
+  textvqa:
+    url: https://huggingface.co/datasets/facebook/textvqa
+    stages: [mt, sft]
+    role: ocr_vqa
+
+  gqa:
+    url: https://cs.stanford.edu/people/dorarad/gqa/download.html
+    stages: [sft]
+    role: visual_reasoning_vqa
+
+  textcaps:
+    url: https://huggingface.co/datasets/lmms-lab/TextCaps
+    stages: [mt, sft]
+    role: ocr_caption
+
+  docvqa:
+    url: https://huggingface.co/datasets/lmms-lab/DocVQA
+    stages: [sft]
+    role: document_vqa
+
+  chartqa:
+    url: https://huggingface.co/datasets/HuggingFaceM4/ChartQA
+    stages: [sft]
+    role: chart_vqa

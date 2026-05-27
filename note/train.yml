@@ -1,0 +1,68 @@
+# 0→1 完全从零预训练（SenseNova MoT 结构 · ~500M）
+#
+# 不下载任何预训练 LLM/VLM 权重；仅使用 Qwen 词表文件。
+# 架构对标 SenseNova-U1-8B-MoT，规模缩至 ~500M。
+
+init_mode: scratch
+weight_init: random
+model_config_path: configs/model/sensenova_500m_mot
+tokenizer_name_or_path: configs/tokenizer/qwen3
+
+checkpoint_chain:
+  understanding_warmup: null
+  generation_pt: outputs/pretrain/uw
+  unified_mt: outputs/pretrain/gen_pt
+  unified_sft: outputs/pretrain/mt
+
+stages:
+  understanding_warmup:
+    init_mode: scratch
+    weight_init: random
+    datasets: "blip3o_long_pt,blip3o_short_pt"
+    loss_weights:
+      ce: 1.0
+      fm: 0.0
+    learning_rate: 2.0e-4
+    max_steps: 200000
+    output_dir: outputs/pretrain/uw
+    deepspeed: configs/deepspeed/zero2.json
+
+  generation_pt:
+    init_mode: checkpoint
+    model_name_or_path: outputs/pretrain/uw
+    tokenizer_name_or_path: outputs/pretrain/uw
+    datasets: "blip3o_long_pt,blip3o_short_pt"
+    loss_weights:
+      ce: 0.0
+      fm: 1.0
+    task_override: t2i
+    learning_rate: 1.0e-4
+    max_steps: 100000
+    output_dir: outputs/pretrain/gen_pt
+    deepspeed: configs/deepspeed/zero2.json
+
+  unified_mt:
+    init_mode: checkpoint
+    model_name_or_path: outputs/pretrain/gen_pt
+    tokenizer_name_or_path: outputs/pretrain/gen_pt
+    datasets: "blip3o_long_mt,blip3o_short_mt,llava150k_mt,sharegpt4v_mt,refcoco_mt,textcaps_mt"
+    loss_weights:
+      ce: 1.0
+      fm: 0.3
+    learning_rate: 1.0e-4
+    max_steps: 50000
+    output_dir: outputs/pretrain/mt
+    deepspeed: configs/deepspeed/zero2.json
+
+  unified_sft:
+    init_mode: checkpoint
+    model_name_or_path: outputs/pretrain/mt
+    tokenizer_name_or_path: outputs/pretrain/mt
+    datasets: "llava150k_sft,sharegpt4v_sft,refcoco_sft,textcaps_sft,docvqa_sft,chartqa_sft"
+    loss_weights:
+      ce: 1.0
+      fm: 0.1
+    learning_rate: 1.2e-4
+    max_steps: 4500
+    output_dir: outputs/pretrain/sft
+    deepspeed: configs/deepspeed/zero2.json
