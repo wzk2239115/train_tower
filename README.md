@@ -56,10 +56,21 @@ random init (~500M MoT)
 |-------|--------|------|
 | UW | `scripts/train_uw.sh` | CE |
 | Gen PT | `scripts/train_gen_pt.sh` | FM |
-| Uni MT | `scripts/train_mt.sh` | CE + FM |
-| Uni SFT | `scripts/train_sft.sh` | CE + FM |
+| Uni MT | `scripts/train_mt.sh` | **Tower 四探针**（见 tower.yml） |
+| Uni SFT | `scripts/train_sft.sh` | **Tower 四探针**（见 tower.yml） |
 
 Checkpoints: `outputs/pretrain/{uw,gen_pt,mt,sft}`
+
+### Flow-JEPA Tower (multi-exit)
+
+Stacked ELF + JEPA at layers 7 / 15 / 21 / 25 (`note/tower.yml`). Enable with `use_flow_tower: true`.
+
+```bash
+chmod +x scripts/train_tower_world.sh
+./scripts/train_tower_world.sh   # Stage 0: world_pt (JEPA + semantic ELF)
+```
+
+See [`idea.md`](idea.md) for the full distillation-tower design.
 
 ### Smoke test
 
@@ -79,12 +90,33 @@ MAX_STEPS=10 DATASETS=blip3o_short_pt ./scripts/train_smoke.sh
 
 **Multi GPU:** `NUM_GPUS=8 ./scripts/train_pretrain.sh` — DeepSpeed ZeRO-2 from yaml is enabled automatically.
 
+## Data visualization (terminal)
+
+Inspect per-stage datasets, modality coverage, Tower exit weights, and training loss curves. Headless-friendly: terminal tables + PNGs under `exports/viz/` (no GUI).
+
+```bash
+pip install -e ".[viz]"
+
+tower viz list-stages
+tower viz metrics --stage understanding_warmup
+tower viz preview --stage unified_mt -n 6
+tower viz compare
+tower viz curves --metric loss
+tower viz export   # -> exports/viz/stage_selections.yml
+
+# or via helper script:
+./scripts/viz_data.sh metrics --stage world_pt
+```
+
+Override datasets: `--datasets blip3o_short_pt,llava_pt`. Python API: `tower.viz`.
+
 ## Architecture
 
 - **Model**: SenseNova `NEOChatModel` (MoT) via `tower/unify/build.py` + `SenseNovaTrainModel`
+- **Flow-JEPA Tower** (optional): `tower/unify/flow_tower.py` — multi-exit JEPA + stacked ELF; see [`idea.md`](idea.md) and [`note/tower.yml`](note/tower.yml)
 - **Data**: NEO `LazySupervisedDataset` + packed collator with `image_gen_indicators`
 - **Freeze schedule**: `tower/train/freeze.py` (UW → und, Gen PT → gen, MT/SFT → all)
-- **Loss**: weighted CE + rectified flow velocity MSE
+- **Loss**: MT/SFT 默认 **Flow-JEPA Tower** 四探针联合（`use_flow_tower: true`，权重见 `note/tower.yml`）；UW/GenPT 仍为单出口 SenseNova
 
 ## Config reference
 
@@ -115,7 +147,9 @@ train_tower/
 ├── tower/
 │   ├── convert/
 │   ├── train/                      # trainer, freeze, dataset
+│   ├── viz/                        # CLI + plots (data stats, metrics)
 │   └── unify/                      # build, SenseNovaTrainModel
+├── exports/viz/                    # saved plots & stage_selections.yml
 ├── note/train.yml
 └── scripts/
 ```
