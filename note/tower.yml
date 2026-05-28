@@ -1,0 +1,90 @@
+# Flow Tower — JEPA + full-tower flow matching
+# L0 uses JEPA target prediction; upper floors use ELF-style rectified flow.
+# Used by tower/unify/flow_tower.py
+
+num_hidden_layers: 26
+hidden_size: 768
+
+exits:
+  world_elf:
+    after_layer: 7
+    type: jepa
+    latent: vision_embed_und
+    elf_depth: 2
+    ema_momentum: 0.996
+    description: "L0 world — JEPA on understanding-path vision embeddings"
+    loss_weights:
+      world_pt: 1.0
+      understanding_warmup: 0.0
+      generation_pt: 0.0
+      unified_mt: 0.05
+      unified_sft: 0.05
+
+  semantic_elf:
+    after_layer: 15
+    type: elf_fm
+    latent: vision_embed
+    elf_depth: 2
+    description: "L1 semantic — flow on generation-path vision embeddings"
+    loss_weights:
+      world_pt: 0.3
+      understanding_warmup: 0.0
+      generation_pt: 0.1
+      unified_mt: 0.15
+      unified_sft: 0.1
+
+  audio_elf:
+    after_layer: 11
+    type: elf_fm
+    latent: audio_embed
+    elf_depth: 2
+    description: "L1.5 audio — flow on early-fused audio embeddings"
+    loss_weights:
+      world_pt: 0.3
+      understanding_warmup: 0.05
+      generation_pt: 0.2
+      unified_mt: 0.2
+      unified_sft: 0.15
+
+  understanding_elf:
+    after_layer: 21
+    type: elf_fm
+    latent: token_hidden
+    elf_depth: 2
+    description: "L2 language — flow on supervised text-token embeddings"
+    loss_weights:
+      world_pt: 0.0
+      understanding_warmup: 1.0
+      generation_pt: 0.0
+      unified_mt: 1.0
+      unified_sft: 1.0
+
+  generative_elf:
+    after_layer: 25
+    type: elf_fm
+    latent: pixel_patch
+    elf_depth: 2
+    description: "L3 generation — flow on pixel patches"
+    loss_weights:
+      world_pt: 0.0
+      understanding_warmup: 0.0
+      generation_pt: 1.0
+      unified_mt: 0.3
+      unified_sft: 0.1
+
+stage_freeze:
+  world_pt:
+    train: [world_elf, semantic_elf, audio_elf]
+    freeze: [understanding_elf, generative_elf]
+  understanding_warmup:
+    train: [understanding_elf]
+    freeze: [generative_elf, audio_elf]
+  generation_pt:
+    train: [semantic_elf, audio_elf, generative_elf]
+    freeze: []
+  unified_mt:
+    train: [world_elf, semantic_elf, audio_elf, understanding_elf, generative_elf]
+    freeze: []
+  unified_sft:
+    train: [world_elf, semantic_elf, audio_elf, understanding_elf, generative_elf]
+    freeze: []
