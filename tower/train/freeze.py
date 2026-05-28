@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from transformers.utils import logging
 
+from tower.unify.tower_config import load_tower_config
+
 logger = logging.get_logger(__name__)
 
 
@@ -47,4 +49,27 @@ def apply_stage_freeze(model, stage: str) -> None:
         stage,
         n_train / 1e6,
         n_total / 1e6,
+    )
+
+
+def apply_tower_exit_freeze(tower_model, stage: str) -> None:
+    """Freeze tower exit modules per note/tower.yml stage_freeze."""
+    if not hasattr(tower_model, "tower_exits"):
+        return
+    tower_cfg = load_tower_config()
+    stage = stage.lower()
+    spec = tower_cfg.stage_freeze.get(stage)
+    if not spec:
+        return
+
+    train_names = set(spec.get("train") or [])
+    for name, module in tower_model.tower_exits.items():
+        trainable = name in train_names
+        for param in module.parameters():
+            param.requires_grad = trainable
+
+    logger.info(
+        "Tower exit freeze '%s': train=%s",
+        stage,
+        sorted(train_names),
     )

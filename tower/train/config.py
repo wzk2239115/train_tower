@@ -52,6 +52,14 @@ class TrainConfig:
     weight_decay: float = 0.01
     max_grad_norm: float = 1.0
     report_to: str = "tensorboard"
+    cfg_label_drop_prob: float = 0.0
+    use_flow_tower: bool = False
+    tower_self_cond_prob: float = 0.0
+    tower_self_cond_cfg_min: float = 1.0
+    tower_self_cond_cfg_max: float = 1.0
+    tower_decoder_prob: float = 0.0
+    audio_context_token_id: int = -1
+    audio_patch_dim: int = 80
 
     @property
     def ce_weight(self) -> float:
@@ -97,6 +105,7 @@ def load_train_config(*, config_path: Path | None = None, stage: str | None = No
         raise KeyError(f"Unknown stage '{stage}' in {TRAIN_YML}")
 
     stage_file_map = {
+        "world_pt": "world_pt.yaml",
         "understanding_warmup": "understanding_warmup.yaml",
         "generation_pt": "generation_pt.yaml",
         "unified_mt": "unified_mt.yaml",

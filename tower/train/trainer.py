@@ -11,9 +11,10 @@ from transformers.utils import logging
 from tower.paths import ensure_train_paths
 from tower.train.config import TrainConfig
 from tower.train.dataset import make_unified_data_module
-from tower.train.freeze import apply_stage_freeze
+from tower.train.freeze import apply_stage_freeze, apply_tower_exit_freeze
 from tower.train.registry import inject_data_dict
 from tower.unify.build import build_model_and_tokenizer
+from tower.unify.flow_tower import FlowJepaTowerTrainModel
 from tower.unify.train_model import SenseNovaTrainModel
 
 logger = logging.get_logger(__name__)
@@ -122,12 +123,14 @@ def run_training(cfg: TrainConfig) -> None:
     if cfg.bf16:
         neo_model = neo_model.to(dtype=torch.bfloat16)
 
-    model = SenseNovaTrainModel(neo_model, cfg)
+    model = FlowJepaTowerTrainModel(neo_model, cfg) if cfg.use_flow_tower else SenseNovaTrainModel(neo_model, cfg)
 
     if training_args.gradient_checkpointing:
         model.gradient_checkpointing_enable()
 
     apply_stage_freeze(model.model, cfg.stage)
+    if cfg.use_flow_tower and isinstance(model, FlowJepaTowerTrainModel):
+        apply_tower_exit_freeze(model, cfg.stage)
 
     data_module = make_unified_data_module(
         tokenizer=tokenizer,

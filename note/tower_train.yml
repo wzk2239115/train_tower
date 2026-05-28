@@ -1,0 +1,39 @@
+# Flow-JEPA Tower training stages (extends note/train.yml when use_flow_tower: true)
+#
+# Enable: python -m tower.cli train --config configs/train/world_pt.yaml
+# Or:     USE_FLOW_TOWER=1 ./scripts/train_tower_world.sh
+
+use_flow_tower: true
+
+checkpoint_chain:
+  world_pt: null
+  understanding_warmup: outputs/pretrain/world_pt
+  generation_pt: outputs/pretrain/uw
+  unified_mt: outputs/pretrain/gen_pt
+  unified_sft: outputs/pretrain/mt
+
+stages:
+  world_pt:
+    init_mode: scratch
+    weight_init: random
+    datasets: "blip3o_long_pt,blip3o_short_pt"
+    use_flow_tower: true
+    loss_weights:
+      ce: 0.0
+      fm: 0.0
+    learning_rate: 2.0e-4
+    max_steps: 50000
+    output_dir: outputs/pretrain/world_pt
+    deepspeed: configs/deepspeed/zero2.json
+
+  understanding_warmup:
+    use_flow_tower: true
+
+  generation_pt:
+    use_flow_tower: true
+
+  unified_mt:
+    use_flow_tower: true
+
+  unified_sft:
+    use_flow_tower: true
