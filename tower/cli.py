@@ -100,7 +100,7 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--config", help="Path to train yaml config")
     train.add_argument(
         "--stage",
-        choices=["understanding_warmup", "generation_pt", "unified_mt", "unified_sft"],
+        choices=["world_pt", "understanding_warmup", "generation_pt", "unified_mt", "unified_sft"],
         help="Training stage (reads note/train.yml + configs/train/)",
     )
     train.add_argument("--datasets", help="Override dataset_use comma list")
@@ -108,11 +108,25 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--output-dir", help="Override output directory")
     train.set_defaults(func=cmd_train)
 
+    viz = sub.add_parser("viz", help="Visualize training data and metrics (terminal)")
+    viz.set_defaults(func=cmd_viz)
+
     return parser
 
 
+def cmd_viz(args: argparse.Namespace) -> int:
+    from tower.viz.cli import main as viz_main
+
+    return viz_main(getattr(args, "viz_argv", None))
+
+
 def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
     parser = build_parser()
+    if argv and argv[0] == "viz":
+        args = parser.parse_args(["viz"])
+        args.viz_argv = argv[1:]
+        return args.func(args)
     args = parser.parse_args(argv)
     return args.func(args)
 
