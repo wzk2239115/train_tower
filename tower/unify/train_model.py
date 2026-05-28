@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import math
+import random
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from tower.train.config import TrainConfig
-from tower.train.losses import rectified_flow_velocity_loss, sample_flow_batch
+from tower.train.losses import compute_resolution_noise_scale, rectified_flow_velocity_loss, sample_flow_batch
 
 
 def _build_indexes_with_hw(model, input_ids, indexes, image_grid_hw):
@@ -119,6 +122,58 @@ class SenseNovaTrainModel(nn.Module):
     def load_state_dict(self, state_dict, strict=True, assign=False):
         return self.model.load_state_dict(state_dict, strict=strict, assign=assign)
 
+    def _parse_grid_hw(self, grid_hw, *, num_patches: int) -> tuple[int, int]:
+        if grid_hw is not None:
+            if isinstance(grid_hw, torch.Tensor):
+                if grid_hw.dim() == 2:
+                    return int(grid_hw[0, 0].item()), int(grid_hw[0, 1].item())
+                return int(grid_hw[0].item()), int(grid_hw[1].item())
+            return int(grid_hw[0][0]), int(grid_hw[0][1])
+        merge = int(1 / self.model.downsample_ratio)
+        side = max(1, int(round(math.sqrt(num_patches))))
+        return side * merge, side * merge
+
+    def _fm_noise_scale(self, grid_h: int, grid_w: int) -> float:
+        cfg = self.model.config
+        merge = int(1 / self.model.downsample_ratio)
+        return compute_resolution_noise_scale(
+            grid_h,
+            grid_w,
+            merge_size=merge,
+            noise_scale=float(getattr(cfg, "noise_scale", 1.0)),
+            noise_scale_mode=str(getattr(cfg, "noise_scale_mode", "resolution")),
+            base_image_seq_len=int(getattr(cfg, "noise_scale_base_image_seq_len", 64)),
+            max_value=float(getattr(cfg, "noise_scale_max_value", 8.0)),
+        )
+
+    def _should_cfg_label_drop(self, batch) -> bool:
+        prob = self.cfg.cfg_label_drop_prob
+        if prob <= 0:
+            return False
+        is_gen = batch.get("is_gen")
+        if is_gen is None:
+            return False
+        if isinstance(is_gen, (list, tuple)):
+            if not any(is_gen):
+                return False
+        elif not is_gen:
+            return False
+        return random.random() < prob
+
+    def _apply_cfg_label_drop(self, hidden, selected: torch.Tensor) -> torch.Tensor:
+        """Zero caption/text embeddings for classifier-free guidance training."""
+        hidden = hidden.clone()
+        cond_mask = ~selected
+        if cond_mask.any():
+            hidden[0, cond_mask] = 0
+        return hidden
+
+    def _fm_time_schedule(self) -> str:
+        schedule = str(getattr(self.model.config, "time_schedule", "logit_normal"))
+        if schedule == "standard":
+            return "logit_normal"
+        return schedule
+
     def _inject_vision(self, input_ids, hidden_states, pixel_values, image_grid_hw, *, gen=False):
         if pixel_values is None or len(pixel_values) == 0 or pixel_values[0] is None:
             grid_size = int(1 / self.model.downsample_ratio)
@@ -186,16 +241,30 @@ class SenseNovaTrainModel(nn.Module):
             return torch.tensor(0.0, device=self.device)
 
         clean = pixel_values[0].to(device=self.device, dtype=self.dtype)
-        z, t, _ = sample_flow_batch(clean.unsqueeze(0), t_eps=self.model.config.t_eps)
+        grid_hw_raw = batch.get("image_grid_hw", [None])[0]
+        grid_h, grid_w = self._parse_grid_hw(grid_hw_raw, num_patches=clean.shape[0])
+        noise_scale = self._fm_noise_scale(grid_h, grid_w)
+
+        model_cfg = self.model.config
+        z, t, _ = sample_flow_batch(
+            clean.unsqueeze(0),
+            t_eps=float(getattr(model_cfg, "t_eps", 0.05)),
+            p_mean=float(getattr(model_cfg, "P_mean", -0.8)),
+            p_std=float(getattr(model_cfg, "P_std", 0.8)),
+            time_schedule=self._fm_time_schedule(),
+            noise_scale=noise_scale,
+        )
         z = z.squeeze(0)
         t_scalar = t.squeeze(0)
 
-        grid_hw = batch.get("image_grid_hw", [None])[0]
-        if grid_hw is None:
-            grid_size = int(1 / self.model.downsample_ratio)
-            grid_hw = torch.tensor([[grid_size, grid_size]], device=self.device)
-        elif not isinstance(grid_hw, torch.Tensor):
-            grid_hw = torch.tensor(grid_hw, device=self.device)
+        if grid_hw_raw is None:
+            merge = int(1 / self.model.downsample_ratio)
+            grid_size = max(grid_h // merge, 1)
+            grid_hw = torch.tensor([[grid_size * merge, grid_size * merge]], device=self.device)
+        elif not isinstance(grid_hw_raw, torch.Tensor):
+            grid_hw = torch.tensor(grid_hw_raw, device=self.device)
+        else:
+            grid_hw = grid_hw_raw.to(device=self.device)
 
         # Noisy patch embedding through gen vision tower
         vit_noisy = self.model.extract_feature(z, gen_model=True, grid_hw=grid_hw)
@@ -208,11 +277,25 @@ class SenseNovaTrainModel(nn.Module):
         if n > 0:
             hidden[0, selected][:n] = vit_noisy[:n]
 
-        t_emb = self.model.fm_modules["timestep_embedder"].timestep_embedding(
-            t_scalar.mean().view(1), self.model.config.llm_config.hidden_size
-        )
         if n > 0:
-            hidden[0, selected][:n] = hidden[0, selected][:n] + t_emb.to(hidden.dtype)
+            t_value = float(t_scalar.mean().item()) if t_scalar.numel() else float(t_scalar.item())
+            t_expanded = torch.full((n,), t_value, device=self.device, dtype=self.dtype)
+            timestep_embeddings = self.model.fm_modules["timestep_embedder"](t_expanded)
+            hidden[0, selected][:n] = hidden[0, selected][:n] + timestep_embeddings.to(hidden.dtype)
+
+            if getattr(model_cfg, "add_noise_scale_embedding", False) and "noise_scale_embedder" in self.model.fm_modules:
+                max_value = float(getattr(model_cfg, "noise_scale_max_value", 8.0))
+                noise_scale_tensor = torch.full(
+                    (n,),
+                    noise_scale / max_value,
+                    device=self.device,
+                    dtype=self.dtype,
+                )
+                noise_embeddings = self.model.fm_modules["noise_scale_embedder"](noise_scale_tensor)
+                hidden[0, selected][:n] = hidden[0, selected][:n] + noise_embeddings.to(hidden.dtype)
+
+        if self._should_cfg_label_drop(batch):
+            hidden = self._apply_cfg_label_drop(hidden, selected)
 
         indexes = _build_indexes_with_hw(self.model, input_ids, batch["indexes"], batch.get("image_grid_hw"))
         from sensenova_u1.models.neo_unify.modeling_qwen3 import create_block_causal_mask
@@ -233,7 +316,9 @@ class SenseNovaTrainModel(nn.Module):
         t_part = t_scalar[: min(n, t_scalar.shape[0])]
         if t_part.numel() == 1 and n > 1:
             t_part = t_part.expand(n)
-        return rectified_flow_velocity_loss(x_pred, z_part, t_part, target, t_eps=self.model.config.t_eps)
+        return rectified_flow_velocity_loss(
+            x_pred, z_part, t_part, target, t_eps=float(getattr(model_cfg, "t_eps", 0.05))
+        )
 
     def forward(self, **batch):
         ce = torch.tensor(0.0, device=self.device)
