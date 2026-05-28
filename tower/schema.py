@@ -12,6 +12,9 @@ class UnifiedSample:
     conversations: list[dict[str, str]]
     width: int | None = None
     height: int | None = None
+    audio: str | None = None
+    audio_values: list[list[float]] | None = None
+    audio_token_mask: list[bool] | None = None
     meta: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -24,6 +27,12 @@ class UnifiedSample:
             out["width"] = self.width
         if self.height is not None:
             out["height"] = self.height
+        if self.audio:
+            out["audio"] = self.audio
+        if self.audio_values is not None:
+            out["audio_values"] = self.audio_values
+        if self.audio_token_mask is not None:
+            out["audio_token_mask"] = self.audio_token_mask
         if self.meta:
             out["meta"] = self.meta
         return out
@@ -39,12 +48,16 @@ def validate_sample(sample: UnifiedSample) -> str | None:
     else:
         images = list(sample.image)
 
-    if not images:
-        return "missing_image"
+    has_audio_values = sample.audio_values is not None and len(sample.audio_values) > 0
+    has_audio_file = bool(sample.audio and Path(sample.audio).is_file())
+    if not images and not has_audio_values and not has_audio_file:
+        return "missing_media"
 
     for path in images:
         if not Path(path).is_file():
             return "missing_image"
+    if sample.audio and not Path(sample.audio).is_file():
+        return "missing_audio"
 
     if sample.conversations:
         n_tags = count_image_tags(sample.conversations)

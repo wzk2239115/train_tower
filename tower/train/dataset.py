@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import copy
 import random
+from pathlib import Path
 from typing import Any
 
 import torch
 
 from tower.train.config import TrainConfig
 from tower.train.tasks import flip_to_t2i, sample_task
+from tower.io.audio import audio_file_to_patch_features
 
 
 class UnifiedTrainDataset:
@@ -16,6 +18,7 @@ class UnifiedTrainDataset:
     def __init__(self, base_dataset, cfg: TrainConfig):
         self._base = base_dataset
         self.cfg = cfg
+        self._audio_cache: dict[str, torch.Tensor] = {}
 
     def __len__(self) -> int:
         return len(self._base)
@@ -47,7 +50,37 @@ class UnifiedTrainDataset:
         item = self._base._get_item(sources)
         item["task"] = task
         item["is_gen"] = task in ("t2i", "interleave")
+        if isinstance(src, dict):
+            audio_values = self._resolve_audio_values(src)
+            if audio_values is not None:
+                item["audio_values"] = audio_values
+            if "audio_token_mask" in src:
+                item["audio_token_mask"] = src.get("audio_token_mask")
         return item
+
+    def _resolve_audio_values(self, src: dict[str, Any]) -> torch.Tensor | list[list[float]] | None:
+        if "audio_values" in src and src.get("audio_values") is not None:
+            audio_values = src.get("audio_values")
+            if isinstance(audio_values, torch.Tensor):
+                return audio_values
+            return torch.tensor(audio_values, dtype=torch.float32)
+
+        path = src.get("audio") or src.get("audio_path")
+        if not isinstance(path, str) or not path.strip():
+            return None
+        p = Path(path)
+        if not p.is_absolute():
+            data_path = getattr(getattr(self._base, "data_args", None), "data_path", None)
+            base = Path(data_path) if isinstance(data_path, str) and data_path else Path.cwd()
+            p = (base / p).resolve()
+        cache_key = str(p)
+        if cache_key in self._audio_cache:
+            return self._audio_cache[cache_key]
+        if not p.is_file():
+            return None
+        feats = audio_file_to_patch_features(p)
+        self._audio_cache[cache_key] = feats
+        return feats
 
 
 def make_unified_data_module(tokenizer, data_args, training_args, cfg: TrainConfig):
@@ -89,4 +122,33 @@ class UnifiedCollator:
         elif self.cfg.task_override == "t2i" or all(batch["is_gen"]):
             indicators[:] = True
         batch["image_gen_indicators"] = indicators
+
+        audio_values = [inst.get("audio_values") for inst in instances]
+        if any(v is not None for v in audio_values):
+            batch["audio_values"] = audio_values
+
+        audio_masks = [inst.get("audio_token_mask") for inst in instances]
+        if any(m is not None for m in audio_masks):
+            audio_mask = torch.zeros(seq_len, dtype=torch.bool)
+            if boundaries is not None:
+                for i, local in enumerate(audio_masks):
+                    if local is None:
+                        continue
+                    local_t = local if isinstance(local, torch.Tensor) else torch.tensor(local)
+                    local_t = local_t.to(dtype=torch.bool).view(-1)
+                    start = int(boundaries[i].item()) if i < len(boundaries) else 0
+                    end = int(boundaries[i + 1].item()) if i + 1 < len(boundaries) else seq_len
+                    span = max(end - start, 0)
+                    n = min(span, local_t.numel())
+                    if n > 0:
+                        audio_mask[start : start + n] = local_t[:n]
+            else:
+                local = audio_masks[0]
+                if local is not None:
+                    local_t = local if isinstance(local, torch.Tensor) else torch.tensor(local)
+                    local_t = local_t.to(dtype=torch.bool).view(-1)
+                    n = min(seq_len, local_t.numel())
+                    if n > 0:
+                        audio_mask[:n] = local_t[:n]
+            batch["audio_token_mask"] = audio_mask
         return batch

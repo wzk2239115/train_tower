@@ -81,5 +81,7 @@ def build_model_and_tokenizer(cfg: TrainConfig):
 
     model.img_context_token_id = tokenizer.convert_tokens_to_ids(IMG_CONTEXT_TOKEN)
     model.img_start_token_id = tokenizer.convert_tokens_to_ids(IMG_START_TOKEN)
+    if getattr(cfg, "audio_context_token_id", -1) >= 0:
+        model.audio_context_token_id = int(cfg.audio_context_token_id)
     model.config.use_cache = False
     return model, tokenizer
