@@ -35,3 +35,14 @@ python -m tower.cli convert --refresh-manifest
 python -c "import json; print(list(json.load(open('data/processed/manifest.json'))))"
 MAX_STEPS=10 DATASETS=blip3o_short_pt ./scripts/train_smoke.sh
 ```
+
+# smoke 训练与多卡
+
+`train_smoke.sh` 用普通 `python` 启动（不是 torchrun）。在 H800 多卡机器上必须限制单卡，否则 HF Trainer 会套 `DataParallel` 导致 `StopIteration`：
+
+```bash
+# 默认已设 CUDA_VISIBLE_DEVICES=0；手动指定也行
+CUDA_VISIBLE_DEVICES=0 MAX_STEPS=10 DATASETS=blip3o_short_pt ./scripts/train_smoke.sh
+```
+
+正式多卡训练用 `scripts/train_uw.sh` 等（内部 `torchrun`）。

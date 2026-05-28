@@ -97,11 +97,19 @@ class SenseNovaTrainModel(nn.Module):
 
     @property
     def device(self):
-        return next(self.model.parameters()).device
+        for param in self.parameters():
+            return param.device
+        for param in self.model.parameters():
+            return param.device
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     @property
     def dtype(self):
-        return next(self.model.parameters()).dtype
+        for param in self.parameters():
+            return param.dtype
+        for param in self.model.parameters():
+            return param.dtype
+        return torch.bfloat16 if self.cfg.bf16 else torch.float32
 
     def gradient_checkpointing_enable(self, **kwargs):
         if hasattr(self.model, "gradient_checkpointing_enable"):
