@@ -20,3 +20,18 @@ MAX_STEPS=10 DATASETS=blip3o_short_pt ./scripts/train_smoke.sh
 ```
 
 若 `third_party/NEO` 缺失，运行 `./scripts/vendor_third_party.sh` 重新同步。
+
+# manifest 与 jsonl 不同步
+
+训练读的是 `data/processed/manifest.json`，不是直接扫 jsonl。
+convert 被 Ctrl+C 中断时，可能 **jsonl 已写好、manifest 未更新**，会报：
+
+`ValueError: Dataset blip3o_short_pt not found in data_dict.`
+
+修复（不重转数据）：
+
+```bash
+python -m tower.cli convert --refresh-manifest
+python -c "import json; print(list(json.load(open('data/processed/manifest.json'))))"
+MAX_STEPS=10 DATASETS=blip3o_short_pt ./scripts/train_smoke.sh
+```

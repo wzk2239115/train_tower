@@ -4,7 +4,7 @@ import argparse
 import sys
 
 from tower.config import PROJECT_ROOT, load_dataset_specs
-from tower.io.writer import write_manifest
+from tower.io.writer import persist_manifest, refresh_manifest_from_disk, write_manifest
 from tower.config import URL_ONLY_DATASETS
 from tower.registry import get_converter
 
@@ -22,7 +22,32 @@ def _select_datasets(args: argparse.Namespace) -> list[str]:
     raise SystemExit("Specify --dataset, --stage, or --all")
 
 
+def cmd_refresh_manifest(_args: argparse.Namespace) -> int:
+    manifest = refresh_manifest_from_disk(PROJECT_ROOT)
+    if not manifest:
+        print("No processed JSONL found under data/processed/.", file=sys.stderr)
+        return 1
+
+    manifest_path = PROJECT_ROOT / "data" / "processed" / "manifest.json"
+    persist_manifest(
+        manifest,
+        manifest_path,
+        PROJECT_ROOT / "note" / "processed_registry.py",
+        PROJECT_ROOT,
+    )
+    print("Refreshed manifest from disk:")
+    for dataset_key in sorted(manifest):
+        entry = manifest[dataset_key]
+        stages = ", ".join(sorted(entry.get("stages", {})))
+        print(f"  {dataset_key}: samples={entry.get('samples')} stages=[{stages}]")
+    print(f"\nManifest: {manifest_path}")
+    return 0
+
+
 def cmd_convert(args: argparse.Namespace) -> int:
+    if args.refresh_manifest:
+        return cmd_refresh_manifest(args)
+
     keys = _select_datasets(args)
     if not keys:
         print("No datasets matched.", file=sys.stderr)
@@ -94,6 +119,11 @@ def build_parser() -> argparse.ArgumentParser:
     convert.add_argument("--all", action="store_true", help="Convert all phase-1 datasets")
     convert.add_argument("--limit", type=int, default=None, help="Max samples per dataset")
     convert.add_argument("--dry-run", action="store_true", help="Count samples without writing")
+    convert.add_argument(
+        "--refresh-manifest",
+        action="store_true",
+        help="Rebuild manifest.json from existing data/processed/*/*.jsonl (no re-convert)",
+    )
     convert.set_defaults(func=cmd_convert)
 
     train = sub.add_parser("train", help="Train unified NEO/SenseNova model")

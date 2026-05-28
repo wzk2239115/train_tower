@@ -20,6 +20,9 @@ case "${1:-all}" in
   dry-run)
     python -m tower.cli convert --all --dry-run "${EXTRA[@]}" "${@:2}"
     ;;
+  refresh-manifest)
+    python -m tower.cli convert --refresh-manifest "${@:2}"
+    ;;
   *)
     python -m tower.cli convert --dataset "$1" "${EXTRA[@]}" "${@:2}"
     ;;
