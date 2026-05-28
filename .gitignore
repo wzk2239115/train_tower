@@ -7,6 +7,9 @@ note/relaion400m/
 # Training checkpoints
 outputs/
 
+# Viz CLI plots (generated locally / on server)
+exports/viz/*.png
+
 # Local third_party symlinks (see third_party/README.md)
 third_party/NEO
 third_party/SenseNova-U1
