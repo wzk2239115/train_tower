@@ -1,5 +1,5 @@
 # Local datasets and processed JSONL (large files — download/convert locally)
-data/
+/data/
 
 # Cached / sample downloads under note/
 note/relaion400m/
@@ -10,9 +10,8 @@ outputs/
 # Viz CLI plots (generated locally / on server)
 exports/viz/*.png
 
-# Local third_party symlinks (see third_party/README.md)
-third_party/NEO
-third_party/SenseNova-U1
+# Vendor script clone cache (source lives in third_party/NEO and third_party/SenseNova-U1)
+.vendor_cache/
 
 # Python
 __pycache__/

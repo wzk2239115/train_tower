@@ -1,0 +1,43 @@
+world_pt:
+  stage: world_pt
+  datasets:
+  - blip3o_long_pt
+  - blip3o_short_pt
+  datasets_csv: blip3o_long_pt,blip3o_short_pt
+  max_samples_per_dataset: null
+understanding_warmup:
+  stage: understanding_warmup
+  datasets:
+  - blip3o_long_pt
+  - blip3o_short_pt
+  datasets_csv: blip3o_long_pt,blip3o_short_pt
+  max_samples_per_dataset: null
+generation_pt:
+  stage: generation_pt
+  datasets:
+  - blip3o_long_pt
+  - blip3o_short_pt
+  datasets_csv: blip3o_long_pt,blip3o_short_pt
+  max_samples_per_dataset: null
+unified_mt:
+  stage: unified_mt
+  datasets:
+  - blip3o_long_mt
+  - blip3o_short_mt
+  - llava150k_mt
+  - sharegpt4v_mt
+  - refcoco_mt
+  - textcaps_mt
+  datasets_csv: blip3o_long_mt,blip3o_short_mt,llava150k_mt,sharegpt4v_mt,refcoco_mt,textcaps_mt
+  max_samples_per_dataset: null
+unified_sft:
+  stage: unified_sft
+  datasets:
+  - llava150k_sft
+  - sharegpt4v_sft
+  - refcoco_sft
+  - textcaps_sft
+  - docvqa_sft
+  - chartqa_sft
+  datasets_csv: llava150k_sft,sharegpt4v_sft,refcoco_sft,textcaps_sft,docvqa_sft,chartqa_sft
+  max_samples_per_dataset: null

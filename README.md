@@ -5,19 +5,29 @@ Data conversion and unified multimodal training pipeline for **SenseNova-U1 MoT*
 ## Setup
 
 ```bash
-cd /home/wzk/projects/train_tower
-git submodule update --init --recursive   # optional
+cd train_tower
 pip install -e ".[train]"
 ./scripts/fetch_tokenizer.sh              # Qwen 词表 only, no weights
 python scripts/estimate_params.py         # verify ~500M param count
+```
+
+Training code (**NEO** + **SenseNova-U1**) is **vendored in-repo** under `third_party/` (~1.5 MB source). Copy the repo to an offline server and train — no git submodule or symlink setup required.
+
+To refresh vendored upstream source:
+
+```bash
+./scripts/vendor_third_party.sh
+# or from local clones:
+./scripts/vendor_third_party.sh --from-local /path/to/NEO /path/to/SenseNova-U1
 ```
 
 Third-party layout:
 
 ```
 third_party/
-├── NEO/            -> NEO/VLMTrainKit (data pipeline)
-└── SenseNova-U1/   -> SenseNova-U1 (neo_unify MoT model)
+├── NEO/              # VLMTrainKit (neo package)
+├── SenseNova-U1/     # src/sensenova_u1 (MoT model)
+└── VENDOR_REVISIONS  # pinned upstream commits
 ```
 
 ## Data conversion

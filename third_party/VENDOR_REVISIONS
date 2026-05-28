@@ -1,0 +1,8 @@
+# Vendored upstream revisions (updated by scripts/vendor_third_party.sh)
+neo_repo: https://github.com/EvolvingLMMs-Lab/NEO.git
+neo_path: VLMTrainKit/
+neo_commit: b2111e61c53d771ff928ee91eb7b11b9f3168c15
+sensenova_repo: https://github.com/OpenSenseNova/SenseNova-U1.git
+sensenova_path: src/
+sensenova_commit: 238d6cf3421d12989ec4a240b173d60c924a760b
+updated_at: 2026-05-28T08:17:20Z
