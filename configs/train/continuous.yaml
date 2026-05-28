@@ -1,0 +1,45 @@
+stage: world_pt
+init_mode: scratch
+weight_init: random
+model_config_path: configs/model/sensenova_500m_mot
+tokenizer_name_or_path: configs/tokenizer/qwen3
+datasets: "blip3o_long_pt,blip3o_short_pt"
+use_flow_tower: true
+loss_weights:
+  ce: 0.0
+  fm: 0.0
+tower_decoder_prob: 0.0
+cfg_label_drop_prob: 0.15
+tower_self_cond_prob: 0.3
+tower_self_cond_cfg_min: 1.0
+tower_self_cond_cfg_max: 2.0
+
+# "True one-run" curriculum: only tower exit loss weights switch by global_step.
+curriculum:
+  - stage: world_pt
+    until_step: 49999
+  - stage: understanding_warmup
+    until_step: 249999
+  - stage: generation_pt
+    until_step: 349999
+  - stage: unified_mt
+    until_step: 399999
+  - stage: unified_sft
+    until_step: 404499
+
+max_steps: 404500
+output_dir: outputs/pretrain/continuous
+deepspeed: configs/deepspeed/zero2.json
+per_device_train_batch_size: 2
+gradient_accumulation_steps: 4
+learning_rate: 2.0e-4
+warmup_steps: 500
+max_seq_length: 8192
+max_pixels: 4194304
+min_pixels: 65536
+gradient_checkpointing: true
+bf16: true
+logging_steps: 10
+save_steps: 5000
+save_total_limit: 2
+dataloader_num_workers: 2

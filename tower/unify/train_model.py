@@ -7,9 +7,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers.modeling_outputs import CausalLMOutputWithPast
+from transformers.utils import logging
 
 from tower.train.config import TrainConfig
 from tower.train.losses import compute_resolution_noise_scale, rectified_flow_velocity_loss, sample_flow_batch
+
+logger = logging.get_logger(__name__)
 
 
 def _build_indexes_with_hw(model, input_ids, indexes, image_grid_hw):
@@ -125,10 +128,25 @@ class SenseNovaTrainModel(nn.Module):
         self.model.save_pretrained(output_dir, **kwargs)
 
     def state_dict(self, *args, **kwargs):
-        return self.model.state_dict(*args, **kwargs)
+        # Keep wrapper modules (e.g. tower exits) in checkpoints.
+        return super().state_dict(*args, **kwargs)
 
     def load_state_dict(self, state_dict, strict=True, assign=False):
-        return self.model.load_state_dict(state_dict, strict=strict, assign=assign)
+        if not state_dict:
+            return super().load_state_dict(state_dict, strict=strict, assign=assign)
+
+        has_prefixed_model = any(k.startswith("model.") for k in state_dict.keys())
+        if has_prefixed_model:
+            return super().load_state_dict(state_dict, strict=strict, assign=assign)
+
+        # Backward compatibility:
+        # legacy checkpoints stored only the wrapped backbone state_dict().
+        converted = {f"model.{k}": v for k, v in state_dict.items()}
+        if strict:
+            logger.warning(
+                "Loading legacy backbone-only checkpoint with strict=False for compatibility."
+            )
+        return super().load_state_dict(converted, strict=False, assign=assign)
 
     def _parse_grid_hw(self, grid_hw, *, num_patches: int) -> tuple[int, int]:
         if grid_hw is not None:

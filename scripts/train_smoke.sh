@@ -23,4 +23,9 @@ Path("outputs").mkdir(exist_ok=True)
 yaml.dump(cfg, open("/tmp/train_tower_smoke.yaml", "w"))
 PY
 
+# shellcheck source=train_env.sh
+source "${ROOT}/scripts/train_env.sh"
+train_env_setup
+train_env_print_training_summary config /tmp/train_tower_smoke.yaml
+
 python -m tower.cli train --config /tmp/train_tower_smoke.yaml "$@"

@@ -60,6 +60,9 @@ class TrainConfig:
     tower_decoder_prob: float = 0.0
     audio_context_token_id: int = -1
     audio_patch_dim: int = 80
+    # Optional step-based curriculum for tower loss stages.
+    # Each item: {"stage": "<stage_name>", "until_step": <int>}
+    curriculum: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def ce_weight(self) -> float:
@@ -69,15 +72,47 @@ class TrainConfig:
     def fm_weight(self) -> float:
         return float(self.loss_weights.get("fm", 0.0))
 
+    def curriculum_stage_for_step(self, step: int) -> str:
+        """Resolve active stage name for the given global step."""
+        if not self.curriculum:
+            return self.stage
+        s = max(int(step), 0)
+        for item in self.curriculum:
+            until = int(item.get("until_step", -1))
+            if until >= 0 and s <= until:
+                return str(item.get("stage", self.stage))
+        return str(self.curriculum[-1].get("stage", self.stage))
+
 
 def _load_yaml(path: Path) -> dict[str, Any]:
     with path.open(encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
 
 
+def _normalize_curriculum(raw_curriculum: Any) -> list[dict[str, Any]]:
+    if not raw_curriculum:
+        return []
+    normalized: list[dict[str, Any]] = []
+    for idx, item in enumerate(raw_curriculum):
+        if not isinstance(item, dict):
+            raise ValueError(f"curriculum[{idx}] must be a mapping")
+        if "stage" not in item or "until_step" not in item:
+            raise ValueError(f"curriculum[{idx}] must include stage and until_step")
+        normalized.append(
+            {
+                "stage": str(item["stage"]),
+                "until_step": int(item["until_step"]),
+            }
+        )
+    return normalized
+
+
 def validate_pretrain_config(cfg: TrainConfig) -> None:
     if cfg.init_mode != "scratch" or cfg.weight_init != "random":
+        # still validate optional curriculum in all modes
+        cfg.curriculum = _normalize_curriculum(cfg.curriculum)
         return
+    cfg.curriculum = _normalize_curriculum(cfg.curriculum)
     if cfg.stage == "understanding_warmup":
         if cfg.model_name_or_path:
             raise ValueError("0→1 scratch UW must not set model_name_or_path")

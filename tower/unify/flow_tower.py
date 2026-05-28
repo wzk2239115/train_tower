@@ -40,6 +40,7 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
             nn.Linear(hidden, hidden),
         )
         self._build_tower_exits()
+        self._tower_global_step: int = 0
 
     def _build_tower_exits(self) -> None:
         hidden = self.model.config.llm_config.hidden_size
@@ -66,8 +67,14 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
     def _exit_map(self) -> dict[int, TowerExitSpec]:
         return {spec.after_layer: spec for spec in self.tower_cfg.exits}
 
+    def set_curriculum_step(self, step: int) -> None:
+        self._tower_global_step = max(int(step), 0)
+
+    def _current_stage(self) -> str:
+        return self.cfg.curriculum_stage_for_step(self._tower_global_step)
+
     def _active_exit_specs(self) -> list[TowerExitSpec]:
-        stage = self.cfg.stage
+        stage = self._current_stage()
         return [e for e in self.tower_cfg.exits if self.tower_cfg.loss_weight(e.name, stage) > 0]
 
     def _fm_sample(
@@ -419,7 +426,7 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
         latents: set[str],
     ) -> torch.Tensor:
         total = torch.tensor(0.0, device=self.device)
-        stage = self.cfg.stage
+        stage = self._current_stage()
         for spec in active:
             if spec.latent not in latents:
                 continue

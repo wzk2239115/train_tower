@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
+# True one-run curriculum training: world_pt -> uw -> gen_pt -> mt -> sft
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 # shellcheck source=train_env.sh
 source "${ROOT}/scripts/train_env.sh"
 train_env_setup
-train_env_print_training_summary stage understanding_warmup
+train_env_print_training_summary config configs/train/continuous.yaml
 torchrun --nproc_per_node="${NUM_GPUS}" \
   --master_addr="${MASTER_ADDR}" --master_port="${MASTER_PORT}" \
-  -m tower.cli train --stage understanding_warmup "${TRAIN_ENV_EXTRA[@]}" "$@"
+  -m tower.cli train --config configs/train/continuous.yaml "${TRAIN_ENV_EXTRA[@]}" "$@"

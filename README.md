@@ -71,6 +71,28 @@ random init (~500M MoT)
 
 Checkpoints: `outputs/pretrain/{uw,gen_pt,mt,sft}`
 
+### 真·一次训练（continuous run）
+
+用单个 job 跑完整 curriculum（`world_pt -> understanding_warmup -> generation_pt -> unified_mt -> unified_sft`），当前版本只切换 `note/tower.yml` 的 tower loss stage，不切数据集和 freeze 策略：
+
+```bash
+chmod +x scripts/train_continuous.sh
+./scripts/train_continuous.sh
+# 等价：
+# torchrun ... -m tower.cli train --config configs/train/continuous.yaml
+```
+
+产物会额外导出到 `outputs/pretrain/continuous/checkpoint/`：
+
+```text
+checkpoint/
+├── backbone.pt
+├── world_model.pt
+├── semantic_model.pt
+├── language_model.pt
+└── generator.pt
+```
+
 ### Flow-JEPA Tower (multi-exit)
 
 Stacked ELF + JEPA at layers 7 / 15 / 21 / 25 (`note/tower.yml`). Enable with `use_flow_tower: true`.
@@ -94,6 +116,8 @@ MAX_STEPS=10 DATASETS=blip3o_short_pt ./scripts/train_smoke.sh
 ./scripts/train_pretrain.sh
 # or stage-by-stage:
 ./scripts/train_uw.sh && ./scripts/train_gen_pt.sh && ./scripts/train_mt.sh && ./scripts/train_sft.sh
+# or single continuous run:
+./scripts/train_continuous.sh
 ```
 
 **Single GPU (default):** scripts use `torchrun` and auto-set `TOWER_NO_DEEPSPEED=1` to avoid `mpi4py` / NVML issues. Force DeepSpeed with `USE_DEEPSPEED=1` (multi-GPU recommended).

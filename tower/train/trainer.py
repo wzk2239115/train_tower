@@ -14,20 +14,51 @@ from tower.train.dataset import make_unified_data_module
 from tower.train.freeze import apply_stage_freeze, apply_tower_exit_freeze
 from tower.train.registry import inject_data_dict
 from tower.unify.build import build_model_and_tokenizer
+from tower.unify.export import export_multi_artifacts
 from tower.unify.flow_tower import FlowJepaTowerTrainModel
 from tower.unify.train_model import SenseNovaTrainModel
 
 logger = logging.get_logger(__name__)
+WRAPPER_WEIGHTS_NAME = "tower_wrapper.bin"
 
 
 class TowerTrainer(Trainer):
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        if hasattr(model, "set_curriculum_step"):
+            model.set_curriculum_step(self.state.global_step)
+        if num_items_in_batch is None:
+            return super().compute_loss(model, inputs, return_outputs=return_outputs)
+        return super().compute_loss(
+            model,
+            inputs,
+            return_outputs=return_outputs,
+            num_items_in_batch=num_items_in_batch,
+        )
+
     def save_model(self, output_dir=None, _internal_call=False):
         if self.args.should_save:
             dest = output_dir if output_dir is not None else self.args.output_dir
+            os.makedirs(dest, exist_ok=True)
             self.model.save_pretrained(dest, safe_serialization=False)
+            torch.save(self.model.state_dict(), os.path.join(dest, WRAPPER_WEIGHTS_NAME))
 
     def _save(self, output_dir: str | None = None, state_dict=None):
-        self.save_model(output_dir, _internal_call=True)
+        if not self.args.should_save:
+            return
+        dest = output_dir if output_dir is not None else self.args.output_dir
+        os.makedirs(dest, exist_ok=True)
+        self.model.save_pretrained(dest, safe_serialization=False)
+        payload = state_dict if state_dict is not None else self.model.state_dict()
+        torch.save(payload, os.path.join(dest, WRAPPER_WEIGHTS_NAME))
+
+    def _load_from_checkpoint(self, resume_from_checkpoint, model=None):
+        super()._load_from_checkpoint(resume_from_checkpoint, model=model)
+        target_model = model if model is not None else self.model
+        wrapper_ckpt = os.path.join(resume_from_checkpoint, WRAPPER_WEIGHTS_NAME)
+        if os.path.isfile(wrapper_ckpt):
+            wrapper_state = torch.load(wrapper_ckpt, map_location="cpu")
+            target_model.load_state_dict(wrapper_state, strict=False)
+            logger.info("Loaded full wrapper state from %s", wrapper_ckpt)
 
 
 def safe_save_model_for_hf_trainer(trainer: Trainer, output_dir: str):
@@ -156,6 +187,7 @@ def run_training(cfg: TrainConfig) -> None:
 
     trainer.save_state()
     safe_save_model_for_hf_trainer(trainer, training_args.output_dir)
+    export_multi_artifacts(model, training_args.output_dir)
     tokenizer.save_pretrained(training_args.output_dir)
 
     meta_path = pathlib.Path(training_args.output_dir) / "train_config.yaml"
