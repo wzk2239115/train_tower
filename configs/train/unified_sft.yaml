@@ -3,9 +3,15 @@ init_mode: checkpoint
 model_name_or_path: outputs/pretrain/mt
 tokenizer_name_or_path: outputs/pretrain/mt
 datasets: "llava150k_sft,sharegpt4v_sft,refcoco_sft,textcaps_sft,docvqa_sft,chartqa_sft"
+use_flow_tower: true
 loss_weights:
   ce: 1.0
   fm: 0.1
+tower_decoder_prob: 0.3
+tower_self_cond_prob: 0.2
+tower_self_cond_cfg_min: 1.0
+tower_self_cond_cfg_max: 1.5
+cfg_label_drop_prob: 0.10
 max_steps: 4500
 output_dir: outputs/pretrain/sft
 deepspeed: configs/deepspeed/zero2.json

@@ -3,9 +3,15 @@ init_mode: checkpoint
 model_name_or_path: outputs/pretrain/gen_pt
 tokenizer_name_or_path: outputs/pretrain/gen_pt
 datasets: "blip3o_long_mt,blip3o_short_mt,llava150k_mt,sharegpt4v_mt,refcoco_mt,textcaps_mt"
+use_flow_tower: true
 loss_weights:
   ce: 1.0
   fm: 0.3
+tower_decoder_prob: 0.2
+tower_self_cond_prob: 0.3
+tower_self_cond_cfg_min: 1.0
+tower_self_cond_cfg_max: 2.0
+cfg_label_drop_prob: 0.15
 max_steps: 50000
 output_dir: outputs/pretrain/mt
 deepspeed: configs/deepspeed/zero2.json

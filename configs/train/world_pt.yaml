@@ -1,24 +1,20 @@
-stage: generation_pt
-init_mode: checkpoint
+stage: world_pt
+init_mode: scratch
 weight_init: random
-model_name_or_path: outputs/pretrain/uw
-tokenizer_name_or_path: outputs/pretrain/uw
+model_config_path: configs/model/sensenova_500m_mot
+tokenizer_name_or_path: configs/tokenizer/qwen3
 datasets: "blip3o_long_pt,blip3o_short_pt"
+use_flow_tower: true
 loss_weights:
   ce: 0.0
-  fm: 1.0
+  fm: 0.0
 tower_decoder_prob: 0.0
-task_override: t2i
-tower_self_cond_prob: 0.5
-tower_self_cond_cfg_min: 1.0
-tower_self_cond_cfg_max: 3.0
-cfg_label_drop_prob: 0.15
-max_steps: 100000
-output_dir: outputs/pretrain/gen_pt
+max_steps: 50000
+output_dir: outputs/pretrain/world_pt
 deepspeed: configs/deepspeed/zero2.json
 per_device_train_batch_size: 2
 gradient_accumulation_steps: 4
-learning_rate: 1.0e-4
+learning_rate: 2.0e-4
 warmup_steps: 500
 max_seq_length: 8192
 max_pixels: 4194304
@@ -29,3 +25,4 @@ logging_steps: 10
 save_steps: 5000
 save_total_limit: 2
 dataloader_num_workers: 2
+tower_self_cond_prob: 0.0
