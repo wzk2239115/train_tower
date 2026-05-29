@@ -77,6 +77,9 @@ def cmd_convert(args: argparse.Namespace) -> int:
                     limit=args.limit,
                     dry_run=args.dry_run,
                     workers=args.workers,
+                    extract_only=args.extract_only,
+                    jsonl_only=args.jsonl_only,
+                    legacy_convert=args.legacy_convert,
                 )
             except (FileNotFoundError, RuntimeError) as exc:
                 print(f"  SKIP {key}: {exc}", file=sys.stderr)
@@ -101,6 +104,9 @@ def cmd_convert(args: argparse.Namespace) -> int:
                     limit=args.limit,
                     dry_run=args.dry_run,
                     workers=args.workers,
+                    extract_only=args.extract_only,
+                    jsonl_only=args.jsonl_only,
+                    legacy_convert=args.legacy_convert,
                 ): key
                 for key in keys
             }
@@ -172,7 +178,22 @@ def build_parser() -> argparse.ArgumentParser:
         "-w",
         type=int,
         default=1,
-        help="Workers per dataset for shard-parallel converters like blip3o (default: 1)",
+        help="Workers per dataset (blip3o: parallel tar extract / jsonl dirs; default: 1)",
+    )
+    convert.add_argument(
+        "--extract-only",
+        action="store_true",
+        help="blip3o only: bulk tar extract to data/images/<dataset>/ (no jsonl)",
+    )
+    convert.add_argument(
+        "--jsonl-only",
+        action="store_true",
+        help="blip3o only: build jsonl from already extracted images (no tar extract)",
+    )
+    convert.add_argument(
+        "--legacy-convert",
+        action="store_true",
+        help="blip3o only: slow per-sample PIL re-encode path",
     )
     convert.add_argument(
         "--refresh-manifest",

@@ -38,18 +38,30 @@ python -m tower.cli convert --stage sft
 python -m tower.cli convert --all
 ```
 
-**Parallel convert** (multiple datasets + per-dataset workers for blip3o tar shards):
+**blip3o fast convert** (default: bulk `tar -xf` + scan for jsonl; no per-image PIL re-encode):
 
 ```bash
-# 4 datasets at once, 8 workers per dataset (blip3o splits by .tar file)
-JOBS=4 WORKERS=8 ./scripts/convert.sh all
+# Recommended for blip3o_long (parallel tar extract + jsonl)
+WORKERS=16 ./scripts/convert.sh blip3o_long
 
-# or CLI flags
-python -m tower.cli convert --all --jobs 4 --workers 8
-python -m tower.cli convert --dataset blip3o_long --workers 16
+# Step-by-step (resume-friendly)
+EXTRACT_ONLY=1 WORKERS=16 ./scripts/convert.sh blip3o_long
+JSONL_ONLY=1  WORKERS=16 ./scripts/convert.sh blip3o_long
+
+# Old slow path (PIL re-encode every image)
+LEGACY_CONVERT=1 WORKERS=8 ./scripts/convert.sh blip3o_long
 ```
 
-`--jobs` / `-j`: parallel datasets. `--workers` / `-w`: parallel tar shards inside one dataset (blip3o only; `--limit` falls back to sequential). Total CPU load is roughly `jobs × workers`.
+Extracted layout: `data/images/blip3o_long/<tar_stem>/{image.jpg, image.txt, ...}`.
+
+**Parallel convert** (multiple datasets at once):
+
+```bash
+JOBS=2 WORKERS=16 ./scripts/convert.sh all
+python -m tower.cli convert --all --jobs 2 --workers 16
+```
+
+`--jobs` / `-j`: parallel datasets. `--workers` / `-w`: parallel tar extract (blip3o) or jsonl scan. `--limit` / `--legacy-convert` use the old slow PIL path.
 
 Output: `data/processed/{pt,mt,sft}/*.jsonl` + `data/processed/manifest.json`
 

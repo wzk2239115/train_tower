@@ -17,6 +17,15 @@ fi
 if [[ "$WORKERS" != "1" ]]; then
   EXTRA+=(--workers "$WORKERS")
 fi
+if [[ "${EXTRACT_ONLY:-0}" == "1" ]]; then
+  EXTRA+=(--extract-only)
+fi
+if [[ "${JSONL_ONLY:-0}" == "1" ]]; then
+  EXTRA+=(--jsonl-only)
+fi
+if [[ "${LEGACY_CONVERT:-0}" == "1" ]]; then
+  EXTRA+=(--legacy-convert)
+fi
 
 case "${1:-all}" in
   all)

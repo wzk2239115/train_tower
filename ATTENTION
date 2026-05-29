@@ -9,6 +9,12 @@ python -m tower.cli convert --dataset blip3o_short --limit 5000
 # ✅ 正确写法 2：用脚本（脚本会读 LIMIT 环境变量）
 LIMIT=5000 ./scripts/convert.sh blip3o_short
 
+# blip3o 全量 convert（默认 fast：并行 tar 解压 + 扫盘写 jsonl，不做 PIL 重编码）
+WORKERS=16 ./scripts/convert.sh blip3o_long
+# 分两步（可断点续跑；已解压的 tar 子目录会 skip）
+EXTRACT_ONLY=1 WORKERS=16 ./scripts/convert.sh blip3o_long
+JSONL_ONLY=1  WORKERS=16 ./scripts/convert.sh blip3o_long
+
 # 训练依赖（NEO + SenseNova-U1）
 
 源码已 vendoring 在 `third_party/`，拷到内网服务器后无需再 clone / 建 symlink：

@@ -23,6 +23,7 @@ class BaseConverter(ABC):
         limit: int | None = None,
         dry_run: bool = False,
         workers: int = 1,
+        **kwargs: object,
     ) -> ConvertReport:
         report = ConvertReport(dataset=spec.key, role=spec.role, dry_run=dry_run)
         writers: dict[str, StageWriter] = {}
@@ -82,6 +83,7 @@ class UrlOnlyConverter(BaseConverter):
         limit: int | None = None,
         dry_run: bool = False,
         workers: int = 1,
+        **kwargs: object,
     ) -> ConvertReport:
         report = ConvertReport(dataset=spec.key, role=spec.role, dry_run=dry_run)
         report.skipped["url_only_dataset"] = 1
