@@ -26,6 +26,9 @@ fi
 if [[ "${LEGACY_CONVERT:-0}" == "1" ]]; then
   EXTRA+=(--legacy-convert)
 fi
+if [[ "${VERBOSE:-0}" == "1" ]]; then
+  EXTRA+=(--verbose)
+fi
 
 case "${1:-all}" in
   all)

@@ -80,6 +80,7 @@ def cmd_convert(args: argparse.Namespace) -> int:
                     extract_only=args.extract_only,
                     jsonl_only=args.jsonl_only,
                     legacy_convert=args.legacy_convert,
+                    verbose=args.verbose,
                 )
             except (FileNotFoundError, RuntimeError) as exc:
                 print(f"  SKIP {key}: {exc}", file=sys.stderr)
@@ -107,6 +108,7 @@ def cmd_convert(args: argparse.Namespace) -> int:
                     extract_only=args.extract_only,
                     jsonl_only=args.jsonl_only,
                     legacy_convert=args.legacy_convert,
+                    verbose=args.verbose,
                 ): key
                 for key in keys
             }
@@ -194,6 +196,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--legacy-convert",
         action="store_true",
         help="blip3o only: slow per-sample PIL re-encode path",
+    )
+    convert.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Print periodic blip3o extract progress to stdout",
     )
     convert.add_argument(
         "--refresh-manifest",

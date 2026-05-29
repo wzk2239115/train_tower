@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 import sys
 import tarfile
 from collections import defaultdict
@@ -30,18 +31,55 @@ def _is_image(path: Path) -> bool:
     return path.suffix.lower() in IMAGE_SUFFIXES
 
 
+def _dir_has_files(path: Path) -> bool:
+    try:
+        next(path.iterdir())
+        return True
+    except StopIteration:
+        return False
+
+
+def _extract_with_system_tar(tar_p: Path, dest: Path) -> str | None:
+    try:
+        proc = subprocess.run(
+            ["tar", "-xf", str(tar_p), "-C", str(dest)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return "tar_not_found"
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "").strip()
+        return err or f"tar exit {proc.returncode}"
+    return None
+
+
 def _extract_one_tar(tar_path: str, images_dir: str) -> tuple[str, int, str | None]:
+    """Return (tar_stem, status, error). status: 1=new extract, 0=skipped existing."""
     tar_p = Path(tar_path)
     dest = Path(images_dir) / tar_p.stem
-    if dest.is_dir() and any(dest.iterdir()):
+    if dest.is_dir() and _dir_has_files(dest):
         return tar_p.stem, 0, None
     dest.mkdir(parents=True, exist_ok=True)
-    try:
-        with tarfile.open(tar_p, "r") as tar_fp:
-            _tar_extractall(tar_fp, dest)
-    except tarfile.TarError as exc:
-        return tar_p.stem, 0, str(exc)
-    return tar_p.stem, sum(1 for _ in dest.rglob("*") if _.is_file()), None
+    err = _extract_with_system_tar(tar_p, dest)
+    if err == "tar_not_found":
+        try:
+            with tarfile.open(tar_p, "r") as tar_fp:
+                _tar_extractall(tar_fp, dest)
+        except tarfile.TarError as exc:
+            return tar_p.stem, 0, str(exc)
+        return tar_p.stem, 1, None
+    if err:
+        return tar_p.stem, 0, err
+    return tar_p.stem, 1, None
+
+
+def _iter_image_files(root: Path) -> list[Path]:
+    direct = sorted(p for p in root.iterdir() if p.is_file() and _is_image(p))
+    if direct:
+        return direct
+    return sorted(p for p in root.rglob("*") if p.is_file() and _is_image(p))
 
 
 def _count_tar_samples(tar_path: str) -> tuple[int, int]:
@@ -79,7 +117,7 @@ def _jsonl_one_extract_dir(
             writers[stage] = writer
 
     tar_stem = root.name
-    for img_path in sorted(p for p in root.rglob("*") if p.is_file() and _is_image(p)):
+    for img_path in _iter_image_files(root):
         txt_path = img_path.with_suffix(".txt")
         if not txt_path.is_file():
             skipped["missing_caption"] += 1
@@ -182,7 +220,7 @@ class Blip3oTarConverter(BaseConverter):
                     if limit is not None and count >= limit:
                         return
 
-    def _extract_fast(self, spec: DatasetSpec, *, dry_run: bool, workers: int) -> ConvertReport:
+    def _extract_fast(self, spec: DatasetSpec, *, dry_run: bool, workers: int, verbose: bool = False) -> ConvertReport:
         tar_paths = self._tar_files(spec)
         if not tar_paths:
             raise FileNotFoundError(f"No .tar files under {spec.raw_dir}")
@@ -202,26 +240,40 @@ class Blip3oTarConverter(BaseConverter):
 
         extracted = 0
         skipped_tars = 0
+        pending = len(tar_paths)
         with ProcessPoolExecutor(max_workers=min(workers, len(tar_paths))) as pool:
             futures = {
-                pool.submit(_extract_one_tar, str(tar_path), str(spec.images_dir)): tar_path
+                pool.submit(_extract_one_tar, str(tar_path), str(spec.images_dir)): tar_path.name
                 for tar_path in tar_paths
             }
-            for fut in tqdm(as_completed(futures), total=len(futures), desc=f"{spec.key} extract", unit="tar"):
-                _stem, n_files, err = fut.result()
+            pbar = tqdm(total=len(futures), desc=f"{spec.key} extract", unit="tar")
+            for fut in as_completed(futures):
+                tar_name = futures[fut]
+                stem, status, err = fut.result()
+                pending -= 1
+                pbar.update(1)
                 if err:
                     report.skipped[f"extract_error:{err}"] += 1
+                    if verbose:
+                        print(f"  extract FAIL {tar_name}: {err}", flush=True)
                     continue
-                if n_files == 0:
+                if status == 0:
                     skipped_tars += 1
                 else:
                     extracted += 1
+                if verbose and (extracted + skipped_tars) % 50 == 0:
+                    print(
+                        f"  extract progress: done={extracted + skipped_tars} "
+                        f"new={extracted} skipped={skipped_tars} pending={pending}",
+                        flush=True,
+                    )
+            pbar.close()
 
         report.skipped["extract_skipped_existing"] = skipped_tars
         report.skipped["extracted_tars"] = extracted
         return report
 
-    def _jsonl_fast(self, spec: DatasetSpec, *, dry_run: bool, workers: int) -> ConvertReport:
+    def _jsonl_fast(self, spec: DatasetSpec, *, dry_run: bool, workers: int, verbose: bool = False) -> ConvertReport:
         subdirs = self._extract_subdirs(spec)
         if not subdirs:
             raise FileNotFoundError(
@@ -279,6 +331,7 @@ class Blip3oTarConverter(BaseConverter):
         extract_only: bool = False,
         jsonl_only: bool = False,
         legacy_convert: bool = False,
+        verbose: bool = False,
     ) -> ConvertReport:
         use_legacy = legacy_convert or limit is not None
         if use_legacy:
@@ -288,15 +341,15 @@ class Blip3oTarConverter(BaseConverter):
             raise ValueError("Use only one of extract_only or jsonl_only")
 
         if extract_only:
-            return self._extract_fast(spec, dry_run=dry_run, workers=max(workers, 1))
+            return self._extract_fast(spec, dry_run=dry_run, workers=max(workers, 1), verbose=verbose)
 
         if jsonl_only:
-            return self._jsonl_fast(spec, dry_run=dry_run, workers=max(workers, 1))
+            return self._jsonl_fast(spec, dry_run=dry_run, workers=max(workers, 1), verbose=verbose)
 
-        extract_report = self._extract_fast(spec, dry_run=dry_run, workers=max(workers, 1))
+        extract_report = self._extract_fast(spec, dry_run=dry_run, workers=max(workers, 1), verbose=verbose)
         if dry_run:
             return extract_report
 
-        jsonl_report = self._jsonl_fast(spec, dry_run=False, workers=max(workers, 1))
+        jsonl_report = self._jsonl_fast(spec, dry_run=False, workers=max(workers, 1), verbose=verbose)
         jsonl_report.skipped = {**extract_report.skipped, **jsonl_report.skipped}
         return jsonl_report
