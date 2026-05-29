@@ -38,6 +38,19 @@ python -m tower.cli convert --stage sft
 python -m tower.cli convert --all
 ```
 
+**Parallel convert** (multiple datasets + per-dataset workers for blip3o tar shards):
+
+```bash
+# 4 datasets at once, 8 workers per dataset (blip3o splits by .tar file)
+JOBS=4 WORKERS=8 ./scripts/convert.sh all
+
+# or CLI flags
+python -m tower.cli convert --all --jobs 4 --workers 8
+python -m tower.cli convert --dataset blip3o_long --workers 16
+```
+
+`--jobs` / `-j`: parallel datasets. `--workers` / `-w`: parallel tar shards inside one dataset (blip3o only; `--limit` falls back to sequential). Total CPU load is roughly `jobs × workers`.
+
 Output: `data/processed/{pt,mt,sft}/*.jsonl` + `data/processed/manifest.json`
 
 ## 0→1 完全从零预训练（SenseNova MoT · ~500M）

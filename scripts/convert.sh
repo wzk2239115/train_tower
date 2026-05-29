@@ -5,9 +5,17 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 LIMIT="${LIMIT:-}"
+JOBS="${JOBS:-1}"
+WORKERS="${WORKERS:-1}"
 EXTRA=()
 if [[ -n "$LIMIT" ]]; then
   EXTRA+=(--limit "$LIMIT")
+fi
+if [[ "$JOBS" != "1" ]]; then
+  EXTRA+=(--jobs "$JOBS")
+fi
+if [[ "$WORKERS" != "1" ]]; then
+  EXTRA+=(--workers "$WORKERS")
 fi
 
 case "${1:-all}" in

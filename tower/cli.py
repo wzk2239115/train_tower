@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from tower.config import PROJECT_ROOT, load_dataset_specs
 from tower.io.writer import persist_manifest, refresh_manifest_from_disk, write_manifest
@@ -20,6 +21,17 @@ def _select_datasets(args: argparse.Namespace) -> list[str]:
     if args.all:
         return [k for k in specs if k not in URL_ONLY_DATASETS]
     raise SystemExit("Specify --dataset, --stage, or --all")
+
+
+def _print_report(key: str, report, *, dry_run: bool) -> None:
+    spec = load_dataset_specs()[key]
+    print(f"\n{'[dry-run] ' if dry_run else ''}Converting {key} (role={spec.role}, stages={spec.stages})")
+    if report.skipped:
+        print(f"  skipped: {dict(report.skipped)}")
+    if report.stages:
+        print(f"  written per stage: {dict(report.stages)}")
+    for stage, path in report.output_files.items():
+        print(f"  -> {path}")
 
 
 def cmd_refresh_manifest(_args: argparse.Namespace) -> int:
@@ -54,23 +66,52 @@ def cmd_convert(args: argparse.Namespace) -> int:
         return 1
 
     reports = []
-    for key in keys:
-        spec = load_dataset_specs()[key]
-        converter = get_converter(key)
-        print(f"\n{'[dry-run] ' if args.dry_run else ''}Converting {key} (role={spec.role}, stages={spec.stages})")
-        try:
-            report = converter.convert(spec, limit=args.limit, dry_run=args.dry_run)
-        except (FileNotFoundError, RuntimeError) as exc:
-            print(f"  SKIP {key}: {exc}", file=sys.stderr)
-            continue
+    if args.jobs <= 1:
+        for key in keys:
+            spec = load_dataset_specs()[key]
+            converter = get_converter(key)
+            print(f"\n{'[dry-run] ' if args.dry_run else ''}Converting {key} (role={spec.role}, stages={spec.stages})")
+            try:
+                report = converter.convert(
+                    spec,
+                    limit=args.limit,
+                    dry_run=args.dry_run,
+                    workers=args.workers,
+                )
+            except (FileNotFoundError, RuntimeError) as exc:
+                print(f"  SKIP {key}: {exc}", file=sys.stderr)
+                continue
 
-        reports.append(report)
-        if report.skipped:
-            print(f"  skipped: {dict(report.skipped)}")
-        if report.stages:
-            print(f"  written per stage: {dict(report.stages)}")
-        for stage, path in report.output_files.items():
-            print(f"  -> {path}")
+            reports.append(report)
+            if report.skipped:
+                print(f"  skipped: {dict(report.skipped)}")
+            if report.stages:
+                print(f"  written per stage: {dict(report.stages)}")
+            for stage, path in report.output_files.items():
+                print(f"  -> {path}")
+    else:
+        from tower.convert.runner import run_convert_job
+
+        print(f"Parallel convert: jobs={args.jobs}, workers={args.workers}, datasets={len(keys)}")
+        with ProcessPoolExecutor(max_workers=min(args.jobs, len(keys))) as pool:
+            futures = {
+                pool.submit(
+                    run_convert_job,
+                    key,
+                    limit=args.limit,
+                    dry_run=args.dry_run,
+                    workers=args.workers,
+                ): key
+                for key in keys
+            }
+            for fut in as_completed(futures):
+                key = futures[fut]
+                key, report, err = fut.result()
+                if err:
+                    print(f"  SKIP {key}: {err}", file=sys.stderr)
+                    continue
+                reports.append(report)
+                _print_report(key, report, dry_run=args.dry_run)
 
     if reports and not args.dry_run:
         write_manifest(
@@ -119,6 +160,20 @@ def build_parser() -> argparse.ArgumentParser:
     convert.add_argument("--all", action="store_true", help="Convert all phase-1 datasets")
     convert.add_argument("--limit", type=int, default=None, help="Max samples per dataset")
     convert.add_argument("--dry-run", action="store_true", help="Count samples without writing")
+    convert.add_argument(
+        "--jobs",
+        "-j",
+        type=int,
+        default=1,
+        help="Convert this many datasets in parallel (default: 1)",
+    )
+    convert.add_argument(
+        "--workers",
+        "-w",
+        type=int,
+        default=1,
+        help="Workers per dataset for shard-parallel converters like blip3o (default: 1)",
+    )
     convert.add_argument(
         "--refresh-manifest",
         action="store_true",
