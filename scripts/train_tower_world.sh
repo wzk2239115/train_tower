@@ -8,4 +8,6 @@ export TOWER_NO_DEEPSPEED="${TOWER_NO_DEEPSPEED:-1}"
 source "${ROOT}/scripts/train_env.sh"
 train_env_setup
 train_env_print_training_summary config configs/train/world_pt.yaml
-python -m tower.cli train --config configs/train/world_pt.yaml "$@"
+torchrun --nproc_per_node="${NUM_GPUS:-1}" \
+  --master_addr="${MASTER_ADDR:-127.0.0.1}" --master_port="${MASTER_PORT:-29500}" \
+  -m tower.cli train --config configs/train/world_pt.yaml "$@"

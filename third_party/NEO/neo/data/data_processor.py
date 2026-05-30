@@ -284,6 +284,23 @@ class FlattenedDataCollatorForSupervisedDataset:
 
         return all_flatten_pixel_values, all_grid_hw
 
+    @staticmethod
+    def _trim_grid_hw_to_patches(grid_hw: torch.Tensor, num_patches: int) -> torch.Tensor:
+        kept = []
+        total = 0
+        for i in range(grid_hw.shape[0]):
+            h, w = int(grid_hw[i, 0].item()), int(grid_hw[i, 1].item())
+            n = h * w
+            if total + n <= num_patches:
+                kept.append([h, w])
+                total += n
+            else:
+                break
+        if not kept and num_patches > 0:
+            side = max(1, int(num_patches**0.5))
+            kept = [[side, max(1, num_patches // side)]]
+        return torch.tensor(kept, dtype=grid_hw.dtype)
+
     def __call__(self, instances: Sequence[Dict]) -> Dict[str, torch.Tensor]:
         current_data_index = 0
         self.total_samples += 1
@@ -347,6 +364,13 @@ class FlattenedDataCollatorForSupervisedDataset:
                     f"Removed {num_removed_images} images from {len(truncated_instances)} instances affected by truncation"
                 )
 
+            img_start_id = self.tokenizer.convert_tokens_to_ids(IMG_START_TOKEN)
+            num_image_slots = int((input_ids == img_start_id).sum().item())
+            if num_image_slots <= 0:
+                pixel_values = []
+            elif len(pixel_values) > num_image_slots:
+                pixel_values = pixel_values[:num_image_slots]
+
             self.abnormal_samples += 1
 
             print(
@@ -390,6 +414,16 @@ class FlattenedDataCollatorForSupervisedDataset:
             flatten_pixel_values, grid_hw = self.preprocess_pixel_values(
                 pixel_values, self.data_args.patch_size
             )
+            expected = int((grid_hw[:, 0] * grid_hw[:, 1]).sum().item())
+            actual = int(flatten_pixel_values.shape[0])
+            if expected != actual:
+                logger.warning(
+                    "Vision batch patch mismatch after preprocess: grid_hw=%s, pixels=%s; trimming grid_hw.",
+                    expected,
+                    actual,
+                )
+                grid_hw = self._trim_grid_hw_to_patches(grid_hw, actual)
+                flatten_pixel_values = flatten_pixel_values[:actual]
             images.append(flatten_pixel_values)
             image_grid_hw.append(grid_hw)
         else:

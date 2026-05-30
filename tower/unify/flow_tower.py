@@ -11,6 +11,7 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from tower.train.config import TrainConfig
 from tower.train.losses import compute_resolution_noise_scale, sample_flow_batch
+from tower.train.vision_batch import reconcile_vision_inputs
 from tower.unify.tower_config import TowerConfig, TowerExitSpec, load_tower_config
 from tower.unify.tower_exits import ElfFlowTowerExit, JepaTowerExit
 from tower.unify.tower_masking import sample_image_token_mask
@@ -181,6 +182,17 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
         grid_hw_raw = batch.get("image_grid_hw", [None])[0]
         if has_image:
             clean = pixel_values[0].to(device=self.device, dtype=self.dtype)
+            if grid_hw_raw is not None:
+                if not isinstance(grid_hw_raw, torch.Tensor):
+                    grid_hw_for_clean = torch.tensor(grid_hw_raw, device=self.device)
+                else:
+                    grid_hw_for_clean = grid_hw_raw.to(device=self.device)
+                clean, grid_hw_for_clean = reconcile_vision_inputs(clean, grid_hw_for_clean)
+                batch = dict(batch)
+                batch["pixel_values"] = [clean]
+                batch["image_grid_hw"] = [grid_hw_for_clean]
+                pixel_values = batch["pixel_values"]
+                grid_hw_raw = grid_hw_for_clean
             grid_h, grid_w = self._parse_grid_hw(grid_hw_raw, num_patches=clean.shape[0])
             noise_scale = self._fm_noise_scale(grid_h, grid_w)
         else:

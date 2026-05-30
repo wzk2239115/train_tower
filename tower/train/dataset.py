@@ -9,6 +9,7 @@ import torch
 
 from tower.train.config import TrainConfig
 from tower.train.tasks import flip_to_t2i, sample_task
+from tower.train.vision_batch import reconcile_vision_inputs
 from tower.io.audio import audio_file_to_patch_features
 
 
@@ -104,6 +105,7 @@ class UnifiedCollator:
 
     def __call__(self, instances):
         batch = self.base_collator(instances)
+        batch = self._reconcile_vision_batch(batch)
         batch["tasks"] = [inst.get("task", "understanding") for inst in instances]
         batch["is_gen"] = [bool(inst.get("is_gen", False)) for inst in instances]
 
@@ -151,4 +153,30 @@ class UnifiedCollator:
                     if n > 0:
                         audio_mask[:n] = local_t[:n]
             batch["audio_token_mask"] = audio_mask
+        return batch
+
+    def _reconcile_vision_batch(self, batch: dict[str, Any]) -> dict[str, Any]:
+        pixel_values = batch.get("pixel_values")
+        image_grid_hw = batch.get("image_grid_hw")
+        if (
+            pixel_values is None
+            or len(pixel_values) == 0
+            or pixel_values[0] is None
+            or not image_grid_hw
+            or len(image_grid_hw) == 0
+            or image_grid_hw[0] is None
+        ):
+            return batch
+
+        flat = pixel_values[0]
+        grid_hw = image_grid_hw[0]
+        if not isinstance(grid_hw, torch.Tensor):
+            grid_hw = torch.tensor(grid_hw, dtype=torch.long)
+
+        num_patches = int(flat.shape[0])
+        expected = int((grid_hw[:, 0] * grid_hw[:, 1]).sum().item())
+        if expected != num_patches:
+            flat, grid_hw = reconcile_vision_inputs(flat, grid_hw)
+            batch["pixel_values"] = [flat]
+            batch["image_grid_hw"] = [grid_hw]
         return batch
