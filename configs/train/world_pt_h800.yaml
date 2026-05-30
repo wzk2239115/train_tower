@@ -1,5 +1,11 @@
-# world_pt tuned for 8× H800 (80GB): higher seq/batch, no activation checkpointing.
-# Global batch unchanged vs world_pt.yaml: 8 GPUs × 4 × 2 = 64.
+# world_pt tuned for 8× H800 (80GB).
+#
+# world_pt runs TWO full backbone passes (und + gen paths for tower exits), so
+# 16384 seq + batch 4 + no checkpointing OOMs on ~80GB. This profile keeps
+# global batch 64 (8×4×2) while raising packed batch and image resolution.
+#
+# If still OOM: set per_device_train_batch_size to 3, or max_pixels to 4194304.
+# If mem is still low (~20%): try max_seq_length 10240 with batch 3.
 stage: world_pt
 init_mode: scratch
 weight_init: random
@@ -18,10 +24,10 @@ per_device_train_batch_size: 4
 gradient_accumulation_steps: 2
 learning_rate: 2.0e-4
 warmup_steps: 500
-max_seq_length: 16384
+max_seq_length: 8192
 max_pixels: 8388608
 min_pixels: 65536
-gradient_checkpointing: false
+gradient_checkpointing: true
 bf16: true
 logging_steps: 10
 save_steps: 5000
