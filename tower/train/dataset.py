@@ -8,6 +8,7 @@ from typing import Any
 import torch
 
 from tower.train.config import TrainConfig
+from tower.train.curriculum import CurriculumRuntime
 from tower.train.tasks import flip_to_t2i, sample_task
 from tower.train.vision_batch import reconcile_vision_inputs
 from tower.io.audio import audio_file_to_patch_features
@@ -89,23 +90,33 @@ def make_unified_data_module(tokenizer, data_args, training_args, cfg: TrainConf
 
     base = LazySupervisedDataset(tokenizer, data_args=data_args)
     train_dataset = UnifiedTrainDataset(base, cfg)
+    curriculum_runtime = CurriculumRuntime(cfg)
     collator = UnifiedCollator(
         base_collator=FlattenedDataCollatorForSupervisedDataset(
             tokenizer=tokenizer, data_args=data_args, training_args=training_args
         ),
         cfg=cfg,
+        curriculum_runtime=curriculum_runtime,
     )
-    return dict(train_dataset=train_dataset, eval_dataset=None, data_collator=collator)
+    return dict(
+        train_dataset=train_dataset,
+        eval_dataset=None,
+        data_collator=collator,
+        curriculum_runtime=curriculum_runtime,
+    )
 
 
 class UnifiedCollator:
-    def __init__(self, base_collator, cfg: TrainConfig):
+    def __init__(self, base_collator, cfg: TrainConfig, curriculum_runtime: CurriculumRuntime | None = None):
         self.base_collator = base_collator
         self.cfg = cfg
+        self.curriculum_runtime = curriculum_runtime
 
     def __call__(self, instances):
         batch = self.base_collator(instances)
         batch = self._reconcile_vision_batch(batch)
+        if self.curriculum_runtime is not None and self.curriculum_runtime.settings:
+            batch["curriculum_phase"] = int(self.curriculum_runtime.phase_index)
         batch["tasks"] = [inst.get("task", "understanding") for inst in instances]
         batch["is_gen"] = [bool(inst.get("is_gen", False)) for inst in instances]
 

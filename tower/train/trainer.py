@@ -10,6 +10,7 @@ from transformers.utils import logging
 
 from tower.paths import ensure_train_paths
 from tower.train.config import TrainConfig
+from tower.train.curriculum import CurriculumCallback
 from tower.train.dataset import make_unified_data_module
 from tower.train.freeze import apply_stage_freeze, apply_tower_exit_freeze
 from tower.train.registry import inject_data_dict
@@ -169,11 +170,24 @@ def run_training(cfg: TrainConfig) -> None:
         training_args=training_args,
         cfg=cfg,
     )
+    curriculum_runtime = data_module.pop("curriculum_runtime")
+    callbacks = []
+    if cfg.curriculum:
+        callbacks.append(
+            CurriculumCallback(
+                curriculum_runtime,
+                data_args=data_args,
+                training_args=training_args,
+                tokenizer=tokenizer,
+            )
+        )
+        logger.info("Length/resolution curriculum enabled with %s phases", len(cfg.curriculum))
 
     trainer = TowerTrainer(
         model=model,
         processing_class=tokenizer,
         args=training_args,
+        callbacks=callbacks,
         **data_module,
     )
 

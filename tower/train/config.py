@@ -10,6 +10,14 @@ from tower.config import PROJECT_ROOT
 
 TRAIN_YML = PROJECT_ROOT / "note" / "train.yml"
 
+CURRICULUM_OVERRIDE_KEYS = (
+    "max_seq_length",
+    "max_pixels",
+    "min_pixels",
+    "per_device_train_batch_size",
+    "gradient_accumulation_steps",
+)
+
 
 @dataclass
 class TrainConfig:
@@ -60,8 +68,9 @@ class TrainConfig:
     tower_decoder_prob: float = 0.0
     audio_context_token_id: int = -1
     audio_patch_dim: int = 80
-    # Optional step-based curriculum for tower loss stages.
-    # Each item: {"stage": "<stage_name>", "until_step": <int>}
+    # Step-based curriculum. Each item requires stage + until_step; optional data keys:
+    # max_seq_length, max_pixels, min_pixels, per_device_train_batch_size,
+    # gradient_accumulation_steps (fall back to top-level TrainConfig when omitted).
     curriculum: list[dict[str, Any]] = field(default_factory=list)
 
     @property
@@ -72,16 +81,42 @@ class TrainConfig:
     def fm_weight(self) -> float:
         return float(self.loss_weights.get("fm", 0.0))
 
+    def curriculum_phase_index_for_step(self, step: int) -> int:
+        if not self.curriculum:
+            return 0
+        s = max(int(step), 0)
+        for i, item in enumerate(self.curriculum):
+            until = int(item.get("until_step", -1))
+            if until >= 0 and s <= until:
+                return i
+        return len(self.curriculum) - 1
+
     def curriculum_stage_for_step(self, step: int) -> str:
         """Resolve active stage name for the given global step."""
         if not self.curriculum:
             return self.stage
-        s = max(int(step), 0)
-        for item in self.curriculum:
-            until = int(item.get("until_step", -1))
-            if until >= 0 and s <= until:
-                return str(item.get("stage", self.stage))
-        return str(self.curriculum[-1].get("stage", self.stage))
+        item = self.curriculum[self.curriculum_phase_index_for_step(step)]
+        return str(item.get("stage", self.stage))
+
+    def curriculum_data_settings_for_step(self, step: int) -> dict[str, Any]:
+        """Merge top-level data settings with active curriculum phase overrides."""
+        idx = self.curriculum_phase_index_for_step(step)
+        item = self.curriculum[idx] if self.curriculum else {}
+        settings: dict[str, Any] = {
+            "phase_index": idx,
+            "stage": self.curriculum_stage_for_step(step),
+            "max_seq_length": self.max_seq_length,
+            "max_pixels": self.max_pixels,
+            "min_pixels": self.min_pixels,
+            "per_device_train_batch_size": self.per_device_train_batch_size,
+            "gradient_accumulation_steps": self.gradient_accumulation_steps,
+            "until_step": int(item.get("until_step", self.max_steps)) if item else self.max_steps,
+        }
+        if self.curriculum:
+            for key in CURRICULUM_OVERRIDE_KEYS:
+                if key in item:
+                    settings[key] = item[key]
+        return settings
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -98,12 +133,15 @@ def _normalize_curriculum(raw_curriculum: Any) -> list[dict[str, Any]]:
             raise ValueError(f"curriculum[{idx}] must be a mapping")
         if "stage" not in item or "until_step" not in item:
             raise ValueError(f"curriculum[{idx}] must include stage and until_step")
-        normalized.append(
-            {
-                "stage": str(item["stage"]),
-                "until_step": int(item["until_step"]),
-            }
-        )
+        entry = {"stage": str(item["stage"]), "until_step": int(item["until_step"])}
+        for key, value in item.items():
+            if key in ("stage", "until_step"):
+                continue
+            if key in CURRICULUM_OVERRIDE_KEYS:
+                entry[key] = int(value)
+            else:
+                entry[key] = value
+        normalized.append(entry)
     return normalized
 
 

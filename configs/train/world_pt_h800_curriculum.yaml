@@ -1,0 +1,52 @@
+# world_pt with length/resolution curriculum for 8× H800.
+# Token budget ≈ batch × seq_len kept roughly stable across phases (8×6×2=96, 8×4×2=64, 8×3×2=48).
+stage: world_pt
+init_mode: scratch
+weight_init: random
+model_config_path: configs/model/sensenova_500m_mot
+tokenizer_name_or_path: configs/tokenizer/qwen3
+datasets: "blip3o_long_pt,blip3o_short_pt"
+use_flow_tower: true
+loss_weights:
+  ce: 0.0
+  fm: 0.0
+tower_decoder_prob: 0.0
+max_steps: 50000
+output_dir: outputs/pretrain/world_pt_h800_curriculum
+deepspeed: configs/deepspeed/zero2.json
+per_device_train_batch_size: 4
+gradient_accumulation_steps: 2
+learning_rate: 2.0e-4
+warmup_steps: 500
+max_seq_length: 8192
+max_pixels: 8388608
+min_pixels: 65536
+gradient_checkpointing: true
+bf16: true
+logging_steps: 10
+save_steps: 5000
+save_total_limit: 2
+dataloader_num_workers: 4
+tower_self_cond_prob: 0.0
+
+curriculum:
+  - stage: world_pt
+    until_step: 14999
+    max_seq_length: 4096
+    max_pixels: 4194304
+    per_device_train_batch_size: 6
+    gradient_accumulation_steps: 2
+
+  - stage: world_pt
+    until_step: 34999
+    max_seq_length: 8192
+    max_pixels: 6291456
+    per_device_train_batch_size: 4
+    gradient_accumulation_steps: 2
+
+  - stage: world_pt
+    until_step: 49999
+    max_seq_length: 8192
+    max_pixels: 8388608
+    per_device_train_batch_size: 3
+    gradient_accumulation_steps: 2
