@@ -197,7 +197,11 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
                     grid_hw_for_clean = torch.tensor(grid_hw_raw, device=self.device)
                 else:
                     grid_hw_for_clean = grid_hw_raw.to(device=self.device)
-                clean, grid_hw_for_clean = reconcile_vision_inputs(clean, grid_hw_for_clean)
+                clean, grid_hw_for_clean = reconcile_vision_inputs(
+                    clean,
+                    grid_hw_for_clean,
+                    spatial_merge=int(1 / self.model.downsample_ratio),
+                )
                 batch = dict(batch)
                 batch["pixel_values"] = [clean]
                 batch["image_grid_hw"] = [grid_hw_for_clean]

@@ -215,7 +215,11 @@ class SenseNovaTrainModel(nn.Module):
             grid_hw = image_grid_hw[0]
             if not isinstance(grid_hw, torch.Tensor):
                 grid_hw = torch.tensor(grid_hw, device=self.device)
-            pixel_values_flat, grid_hw = reconcile_vision_inputs(pixel_values_flat, grid_hw)
+            pixel_values_flat, grid_hw = reconcile_vision_inputs(
+                pixel_values_flat,
+                grid_hw,
+                spatial_merge=int(1 / self.model.downsample_ratio),
+            )
 
         if gen:
             vit_embeds = self.model.extract_feature(pixel_values_flat, gen_model=True, grid_hw=grid_hw)
