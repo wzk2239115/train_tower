@@ -6,6 +6,7 @@ from dataclasses import asdict
 
 import torch
 from transformers import HfArgumentParser, Trainer, set_seed
+from transformers.optimization import get_scheduler
 from transformers.utils import logging
 
 from tower.paths import ensure_train_paths
@@ -24,6 +25,33 @@ WRAPPER_WEIGHTS_NAME = "tower_wrapper.bin"
 
 
 class TowerTrainer(Trainer):
+    def create_scheduler(self, num_training_steps: int, optimizer=None):
+        """DeepSpeedZeroOptimizer lacks ``defaults``; pass ``min_lr_rate`` explicitly."""
+        if (
+            self.is_deepspeed_enabled
+            and self.args.lr_scheduler_type == "cosine_with_min_lr"
+            and self.lr_scheduler is None
+        ):
+            if optimizer is None:
+                optimizer = self.optimizer
+            kwargs = dict(self.args.lr_scheduler_kwargs or {})
+            min_lr = kwargs.pop("min_lr", None)
+            lr = float(self.args.learning_rate)
+            if min_lr is not None and lr > 0:
+                kwargs["min_lr_rate"] = float(min_lr) / lr
+            elif "min_lr_rate" not in kwargs:
+                kwargs["min_lr_rate"] = float(getattr(self.args, "min_lr_ratio", 0.0))
+            self.lr_scheduler = get_scheduler(
+                self.args.lr_scheduler_type,
+                optimizer=optimizer,
+                num_warmup_steps=self.args.get_warmup_steps(num_training_steps),
+                num_training_steps=num_training_steps,
+                scheduler_specific_kwargs=kwargs,
+            )
+            self._created_lr_scheduler = True
+            return self.lr_scheduler
+        return super().create_scheduler(num_training_steps, optimizer=optimizer)
+
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         if hasattr(model, "set_curriculum_step"):
             model.set_curriculum_step(self.state.global_step)
