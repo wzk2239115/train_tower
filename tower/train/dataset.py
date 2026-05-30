@@ -185,9 +185,8 @@ class UnifiedCollator:
             grid_hw = torch.tensor(grid_hw, dtype=torch.long)
 
         num_patches = int(flat.shape[0])
-        expected = int((grid_hw[:, 0] * grid_hw[:, 1]).sum().item())
-        if expected != num_patches:
-            flat, grid_hw = reconcile_vision_inputs(flat, grid_hw)
-            batch["pixel_values"] = [flat]
-            batch["image_grid_hw"] = [grid_hw]
+        merge = max(1, int(round(1 / float(self.cfg.downsample_ratio))))
+        flat, grid_hw = reconcile_vision_inputs(flat, grid_hw, spatial_merge=merge)
+        batch["pixel_values"] = [flat]
+        batch["image_grid_hw"] = [grid_hw]
         return batch
