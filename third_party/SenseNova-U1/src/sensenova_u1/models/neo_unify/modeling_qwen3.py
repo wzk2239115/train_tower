@@ -432,7 +432,6 @@ class Qwen3Attention(nn.Module):
         cache_position: Optional[torch.LongTensor] = None,
         **kwargs: Unpack[FlashAttentionKwargs],
     ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
-        assert self.config._attn_implementation == "eager"
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
@@ -756,8 +755,7 @@ class Qwen3Attention(nn.Module):
             return self.forward_und(hidden_states, indexes, attention_mask, past_key_values, cache_position, **kwargs)
         if not exist_non_image_gen_tokens and exist_image_gen_tokens:
             return self.forward_gen(hidden_states, indexes, attention_mask, past_key_values, cache_position, **kwargs)
-        
-        assert self.config._attn_implementation == "eager"
+
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
