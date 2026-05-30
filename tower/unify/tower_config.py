@@ -29,6 +29,7 @@ class TowerConfig:
     hidden_size: int
     exits: tuple[TowerExitSpec, ...]
     stage_freeze: dict[str, dict[str, list[str]]]
+    stage_shallow_train_layers: dict[str, int]
 
     def exit(self, name: str) -> TowerExitSpec:
         for spec in self.exits:
@@ -46,6 +47,20 @@ class TowerConfig:
     def hook_layers(self) -> list[int]:
         """Sorted unique layer indices where exits attach."""
         return sorted({e.after_layer for e in self.exits})
+
+    def max_hook_layer(self, stage: str) -> int | None:
+        """Highest backbone layer index needed for active exits in *stage*."""
+        active = self.active_exits(stage)
+        if not active:
+            return None
+        return max(e.after_layer for e in active)
+
+    def shallow_train_layers(self, stage: str) -> int | None:
+        """Number of und LLM layers (0-indexed prefix) to train, or None for full backbone."""
+        value = self.stage_shallow_train_layers.get(stage)
+        if value is None:
+            return None
+        return int(value)
 
 
 def load_tower_config(path: Path | None = None) -> TowerConfig:
@@ -69,9 +84,13 @@ def load_tower_config(path: Path | None = None) -> TowerConfig:
         )
     exits.sort(key=lambda e: e.after_layer)
 
+    shallow_raw = raw.get("stage_shallow_train_layers") or {}
+    stage_shallow_train_layers = {str(k): int(v) for k, v in shallow_raw.items()}
+
     return TowerConfig(
         num_hidden_layers=int(raw.get("num_hidden_layers", 26)),
         hidden_size=int(raw.get("hidden_size", 768)),
         exits=tuple(exits),
         stage_freeze=raw.get("stage_freeze") or {},
+        stage_shallow_train_layers=stage_shallow_train_layers,
     )

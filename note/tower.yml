@@ -72,6 +72,11 @@ exits:
       unified_mt: 0.3
       unified_sft: 0.1
 
+# Und LLM layer prefix to train per stage (None / omitted = full backbone).
+# world_pt: 8 → layers[0:8] trainable (L0 JEPA through layer 7); deeper layers frozen.
+stage_shallow_train_layers:
+  world_pt: 8
+
 stage_freeze:
   world_pt:
     train: [world_elf, semantic_elf, audio_elf]

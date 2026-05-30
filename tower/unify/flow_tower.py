@@ -78,6 +78,11 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
         stage = self._current_stage()
         return [e for e in self.tower_cfg.exits if self.tower_cfg.loss_weight(e.name, stage) > 0]
 
+    def _max_hook_layer(self, active: list[TowerExitSpec]) -> int | None:
+        if not active:
+            return None
+        return max(spec.after_layer for spec in active)
+
     def _fm_sample(
         self,
         clean: torch.Tensor,
@@ -106,16 +111,21 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
         indexes,
         attn,
         indicators: torch.Tensor,
+        stop_layer: int | None = None,
+        hook_layers: set[int] | None = None,
     ) -> dict[int, torch.Tensor]:
         llm = self.model.language_model.model
         exist_non = (~indicators).any()
         exist_gen = indicators.any()
         hooks: dict[int, torch.Tensor] = {}
-        exit_layers = set(self._exit_map().keys())
+        if hook_layers is None:
+            hook_layers = set(self._exit_map().keys())
         full_attention = attn["full_attention"] if isinstance(attn, dict) and "full_attention" in attn else attn
 
         h = hidden_states
         for layer_idx, decoder_layer in enumerate(llm.layers):
+            if stop_layer is not None and layer_idx > stop_layer:
+                break
             h = decoder_layer(
                 h,
                 image_gen_indicators=indicators.unsqueeze(0),
@@ -124,7 +134,7 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
                 indexes=indexes,
                 attention_mask=full_attention,
             )
-            if layer_idx in exit_layers:
+            if layer_idx in hook_layers:
                 hooks[layer_idx] = h
 
         return hooks
@@ -454,6 +464,8 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
             return torch.tensor(0.0, device=self.device)
 
         total = torch.tensor(0.0, device=self.device)
+        stop_layer = self._max_hook_layer(active)
+        hook_layers = {spec.after_layer for spec in active}
 
         if not self._batch_has_images(batch) and not self._batch_has_audio(batch):
             ctx = self._prepare_text_batch(batch)
@@ -463,6 +475,8 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
                     indexes=ctx["indexes"],
                     attn=ctx["attn"],
                     indicators=ctx["indicators"],
+                    stop_layer=stop_layer,
+                    hook_layers=hook_layers,
                 )
                 total = total + self._accumulate_exit_losses(
                     active, hooks, ctx, latents={"token_hidden"}
@@ -478,6 +492,8 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
                     indexes=ctx["indexes"],
                     attn=ctx["attn"],
                     indicators=ctx["indicators"],
+                    stop_layer=stop_layer,
+                    hook_layers=hook_layers,
                 )
                 total = total + self._accumulate_exit_losses(active, hooks, ctx, latents=und_latents)
 
@@ -490,6 +506,8 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
                     indexes=ctx["indexes"],
                     attn=ctx["attn"],
                     indicators=ctx["indicators"],
+                    stop_layer=stop_layer,
+                    hook_layers=hook_layers,
                 )
                 total = total + self._accumulate_exit_losses(active, hooks, ctx, latents=gen_latents)
 

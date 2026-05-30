@@ -68,6 +68,7 @@ class TrainConfig:
     tower_decoder_prob: float = 0.0
     audio_context_token_id: int = -1
     audio_patch_dim: int = 80
+    attn_implementation: str = "sdpa"
     # Step-based curriculum. Each item requires stage + until_step; optional data keys:
     # max_seq_length, max_pixels, min_pixels, per_device_train_batch_size,
     # gradient_accumulation_steps (fall back to top-level TrainConfig when omitted).
