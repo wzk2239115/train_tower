@@ -478,8 +478,9 @@ class Qwen3Attention(nn.Module):
                     key_states   = torch.cat([past_k, key_states], dim=2)   # concat on seq_len
                     value_states = torch.cat([past_v, value_states], dim=2)
 
+        # Block-causal mask from create_block_causal_mask is only supported on eager.
         attention_interface: Callable = eager_attention_forward
-        if self.config._attn_implementation != "eager":
+        if attention_mask is None and self.config._attn_implementation != "eager":
             attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
 
         attn_output, attn_weights = attention_interface(
@@ -718,8 +719,9 @@ class Qwen3Attention(nn.Module):
                     key_states = torch.cat([past_k, key_states], dim=2)
                     value_states = torch.cat([past_v, value_states], dim=2)
 
+        # Block-causal mask from create_block_causal_mask is only supported on eager.
         attention_interface: Callable = eager_attention_forward
-        if self.config._attn_implementation != "eager":
+        if attention_mask is None and self.config._attn_implementation != "eager":
             attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
 
         attn_output, attn_weights = attention_interface(
@@ -825,8 +827,9 @@ class Qwen3Attention(nn.Module):
                     key_states   = torch.cat([past_k, key_states], dim=2)   # concat on seq_len
                     value_states = torch.cat([past_v, value_states], dim=2)
 
+        # Block-causal mask from create_block_causal_mask is only supported on eager.
         attention_interface: Callable = eager_attention_forward
-        if self.config._attn_implementation != "eager":
+        if attention_mask is None and self.config._attn_implementation != "eager":
             attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
 
         attn_output, attn_weights = attention_interface(

@@ -1,12 +1,13 @@
 # world_pt tuned for 8× 80GB GPUs (H800 / H100).
 #
-# Uses partial tower forward (to L15), shallow backbone freeze, and flash_attention_2.
+# Uses partial tower forward (to L15) and shallow backbone freeze.
+# Flow Tower training uses block-causal masks → backbone attention stays eager.
 # Still runs und + gen paths; global batch 64 (8×4×2).
 #
 # If still OOM: set per_device_train_batch_size to 3, or max_pixels to 4194304.
 # If mem headroom remains: try max_seq_length 10240 with batch 3–4.
 stage: world_pt
-attn_implementation: flash_attention_2
+attn_implementation: eager
 init_mode: scratch
 weight_init: random
 model_config_path: configs/model/sensenova_500m_mot

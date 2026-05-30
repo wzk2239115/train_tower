@@ -33,7 +33,13 @@ def _apply_attn_implementation(model, impl: str) -> None:
     model.config.llm_config._attn_implementation = resolved
     from transformers.utils import logging
 
-    logging.get_logger(__name__).info("LLM attention implementation: %s", resolved)
+    log = logging.get_logger(__name__)
+    log.info("LLM attention implementation: %s", resolved)
+    if resolved != "eager":
+        log.warning(
+            "Masked training paths (create_block_causal_mask) always use eager "
+            "attention; flash/sdpa only applies when attention_mask is None"
+        )
 
 
 def _resolve_path(path: str | None) -> str | None:
