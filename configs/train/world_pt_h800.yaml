@@ -1,0 +1,30 @@
+# world_pt tuned for 8× H800 (80GB): higher seq/batch, no activation checkpointing.
+# Global batch unchanged vs world_pt.yaml: 8 GPUs × 4 × 2 = 64.
+stage: world_pt
+init_mode: scratch
+weight_init: random
+model_config_path: configs/model/sensenova_500m_mot
+tokenizer_name_or_path: configs/tokenizer/qwen3
+datasets: "blip3o_long_pt,blip3o_short_pt"
+use_flow_tower: true
+loss_weights:
+  ce: 0.0
+  fm: 0.0
+tower_decoder_prob: 0.0
+max_steps: 50000
+output_dir: outputs/pretrain/world_pt_h800
+deepspeed: configs/deepspeed/zero2.json
+per_device_train_batch_size: 4
+gradient_accumulation_steps: 2
+learning_rate: 2.0e-4
+warmup_steps: 500
+max_seq_length: 16384
+max_pixels: 8388608
+min_pixels: 65536
+gradient_checkpointing: false
+bf16: true
+logging_steps: 10
+save_steps: 5000
+save_total_limit: 2
+dataloader_num_workers: 4
+tower_self_cond_prob: 0.0
