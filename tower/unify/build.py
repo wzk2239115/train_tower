@@ -156,7 +156,19 @@ def build_model_and_tokenizer(cfg: TrainConfig):
     model.img_context_token_id, model.img_start_token_id = img_token_ids(tokenizer)
     if getattr(cfg, "audio_context_token_id", -1) >= 0:
         model.audio_context_token_id = int(cfg.audio_context_token_id)
+    else:
+        c = __import__("tower.neo.data.constants", fromlist=["AUDIO_CONTEXT_TOKEN"])
+        model.audio_context_token_id = tokenizer.convert_tokens_to_ids(c.AUDIO_CONTEXT_TOKEN)
+    if getattr(cfg, "audio_start_token_id", None) is None:
+        c = __import__("tower.neo.data.constants", fromlist=["AUDIO_START_TOKEN"])
+        model.audio_start_token_id = tokenizer.convert_tokens_to_ids(c.AUDIO_START_TOKEN)
     if getattr(cfg, "video_context_token_id", -1) >= 0:
         model.video_context_token_id = int(cfg.video_context_token_id)
+    else:
+        c = __import__("tower.neo.data.constants", fromlist=["VIDEO_CONTEXT_TOKEN"])
+        model.video_context_token_id = tokenizer.convert_tokens_to_ids(c.VIDEO_CONTEXT_TOKEN)
+    if getattr(cfg, "video_start_token_id", None) is None:
+        c = __import__("tower.neo.data.constants", fromlist=["VIDEO_START_TOKEN"])
+        model.video_start_token_id = tokenizer.convert_tokens_to_ids(c.VIDEO_START_TOKEN)
     model.config.use_cache = False
     return model, tokenizer

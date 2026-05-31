@@ -81,8 +81,11 @@ class TrainConfig:
     tower_decoder_prob: float = 0.0
     audio_context_token_id: int = -1
     audio_patch_dim: int = 80
+    audio_n_mels: int = 80
+    audio_patch_t: int = 4
+    audio_sample_rate: int = 24000
+    audio_hop_size: int = 256
     video_context_token_id: int = -1
-    # Keep conservative default aligned to common precomputed ViT/CLIP-like video features.
     video_patch_dim: int = 1024
     video_num_frames: int = 16
     attn_implementation: str = "sdpa"

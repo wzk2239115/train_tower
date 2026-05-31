@@ -30,6 +30,11 @@
   "use_pixel_head": false,
   "use_adaLN": false,
   "tie_word_embeddings": true,
+  "audio_n_mels": 80,
+  "audio_patch_t": 4,
+  "audio_sample_rate": 24000,
+  "audio_hop_size": 256,
+  "video_num_frames": 16,
   "llm_config": {
     "architectures": ["Qwen3ForCausalLM"],
     "model_type": "qwen3",
