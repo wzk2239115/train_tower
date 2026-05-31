@@ -40,6 +40,17 @@ def apply_sensenova_transformers_compat() -> None:
     except ImportError:
         pass
 
+    # transformers 5.x may access ``all_tied_weights_keys`` on top-level model
+    # during loading report finalization. SenseNova's NEOChatModel does not
+    # define it, so provide a harmless fallback to avoid AttributeError.
+    try:
+        from sensenova_u1.models.neo_unify import modeling_neo_chat as sn_chat
+
+        if not hasattr(sn_chat.NEOChatModel, "all_tied_weights_keys"):
+            sn_chat.NEOChatModel.all_tied_weights_keys = {}
+    except ImportError:
+        pass
+
     _APPLIED = True
 
 

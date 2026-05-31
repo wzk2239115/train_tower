@@ -106,7 +106,12 @@ def build_checkpoint_model(cfg: TrainConfig):
     config = NEOChatConfig.from_pretrained(ckpt)
     fix_llm_config_compat(config)
     fix_vision_config_compat(config)
-    model = NEOChatModel.from_pretrained(ckpt, config=config, torch_dtype=dtype)
+    model = NEOChatModel.from_pretrained(
+        ckpt,
+        config=config,
+        torch_dtype=dtype,
+        ignore_mismatched_sizes=True,
+    )
     _apply_attn_implementation(model, cfg.attn_implementation)
     return model
 
