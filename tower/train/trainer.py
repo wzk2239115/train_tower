@@ -118,6 +118,41 @@ def _resolve_deepspeed(cfg: TrainConfig) -> str | None:
     return cfg.deepspeed
 
 
+def _run_dataloader_preflight(trainer: Trainer, steps: int) -> None:
+    """Warm up dataloader and show fetch progress before training starts."""
+    if steps <= 0:
+        return
+    dl = trainer.get_train_dataloader()
+    if dl is None:
+        return
+
+    try:
+        from tqdm.auto import tqdm
+    except Exception:
+        tqdm = None
+
+    target = int(steps)
+    logger.info("Dataloader preflight: fetching %s batch(es)", target)
+    it = iter(dl)
+    fetched = 0
+    progress = tqdm(total=target, desc="DataLoad", leave=False) if tqdm is not None else None
+    try:
+        while fetched < target:
+            try:
+                _ = next(it)
+            except StopIteration:
+                break
+            fetched += 1
+            if progress is not None:
+                progress.update(1)
+            elif fetched % 10 == 0 or fetched == target:
+                logger.info("Dataloader preflight progress: %s/%s", fetched, target)
+    finally:
+        if progress is not None:
+            progress.close()
+    logger.info("Dataloader preflight done: fetched %s/%s batch(es)", fetched, target)
+
+
 def run_training(cfg: TrainConfig) -> None:
     ensure_train_paths()
     inject_data_dict()
@@ -218,6 +253,9 @@ def run_training(cfg: TrainConfig) -> None:
         callbacks=callbacks,
         **data_module,
     )
+
+    preflight_steps = int(os.environ.get("TOWER_DATALOADER_PREFLIGHT_STEPS", "0") or 0)
+    _run_dataloader_preflight(trainer, preflight_steps)
 
     ckpt_dirs = sorted(pathlib.Path(training_args.output_dir).glob("checkpoint-*"))
     resume = ckpt_dirs and (ckpt_dirs[-1] / "pytorch_model.bin").is_file()

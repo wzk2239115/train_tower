@@ -56,6 +56,8 @@ run_stage() {
   echo "[h100_resume_pipeline] stage=${stage_name} NUM_GPUS=${NUM_GPUS} CONFIG=${CONFIG}"
   echo "[h100_resume_pipeline] profile=${H800_PROFILE}"
   echo "[h100_resume_pipeline] MASTER=${MASTER_ADDR}:${MASTER_PORT} USE_DEEPSPEED=${USE_DEEPSPEED}"
+  export TOWER_DATALOADER_PREFLIGHT_STEPS="${TOWER_DATALOADER_PREFLIGHT_STEPS:-20}"
+  echo "[h100_resume_pipeline] dataloader_preflight_steps=${TOWER_DATALOADER_PREFLIGHT_STEPS}"
   [[ -n "${DATASETS:-}" ]] && echo "[h100_resume_pipeline] DATASETS=${DATASETS}"
   [[ -n "${MAX_STEPS:-}" ]] && echo "[h100_resume_pipeline] MAX_STEPS=${MAX_STEPS}"
   [[ -n "${OUTPUT_DIR:-}" ]] && echo "[h100_resume_pipeline] OUTPUT_DIR=${OUTPUT_DIR}"
