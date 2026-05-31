@@ -156,5 +156,7 @@ def build_model_and_tokenizer(cfg: TrainConfig):
     model.img_context_token_id, model.img_start_token_id = img_token_ids(tokenizer)
     if getattr(cfg, "audio_context_token_id", -1) >= 0:
         model.audio_context_token_id = int(cfg.audio_context_token_id)
+    if getattr(cfg, "video_context_token_id", -1) >= 0:
+        model.video_context_token_id = int(cfg.video_context_token_id)
     model.config.use_cache = False
     return model, tokenizer

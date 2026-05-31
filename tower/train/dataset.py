@@ -11,7 +11,7 @@ from transformers.utils import logging
 from tower.train.config import TrainConfig
 from tower.train.curriculum import CurriculumRuntime
 from tower.train.packed_batch_monitor import attach_packed_batch_stats
-from tower.train.tasks import flip_to_t2i, sample_task
+from tower.train.tasks import flip_to_t2i, is_generation_task, sample_task
 from tower.train.vision_batch import reconcile_vision_inputs
 from tower.io.audio import audio_file_to_patch_features
 
@@ -25,6 +25,7 @@ class UnifiedTrainDataset:
         self._base = base_dataset
         self.cfg = cfg
         self._audio_cache: dict[str, torch.Tensor] = {}
+        self._video_cache: dict[str, torch.Tensor] = {}
 
     def __len__(self) -> int:
         return len(self._base)
@@ -55,13 +56,18 @@ class UnifiedTrainDataset:
 
         item = self._base._get_item(sources)
         item["task"] = task
-        item["is_gen"] = task in ("t2i", "interleave")
+        item["is_gen"] = is_generation_task(task)
         if isinstance(src, dict):
             audio_values = self._resolve_audio_values(src)
             if audio_values is not None:
                 item["audio_values"] = audio_values
             if "audio_token_mask" in src:
                 item["audio_token_mask"] = src.get("audio_token_mask")
+            video_values = self._resolve_video_values(src)
+            if video_values is not None:
+                item["video_values"] = video_values
+            if "video_token_mask" in src:
+                item["video_token_mask"] = src.get("video_token_mask")
         return item
 
     def _resolve_audio_values(self, src: dict[str, Any]) -> torch.Tensor | list[list[float]] | None:
@@ -88,6 +94,84 @@ class UnifiedTrainDataset:
         self._audio_cache[cache_key] = feats
         return feats
 
+    def _resolve_video_values(self, src: dict[str, Any]) -> torch.Tensor | None:
+        if "video_values" in src and src.get("video_values") is not None:
+            video_values = src.get("video_values")
+            if isinstance(video_values, torch.Tensor):
+                return video_values.to(dtype=torch.float32)
+            return torch.tensor(video_values, dtype=torch.float32)
+
+        path = src.get("video") or src.get("video_path")
+        if not isinstance(path, str) or not path.strip():
+            return None
+        p = Path(path)
+        if not p.is_absolute():
+            data_path = getattr(getattr(self._base, "data_args", None), "data_path", None)
+            base = Path(data_path) if isinstance(data_path, str) and data_path else Path.cwd()
+            p = (base / p).resolve()
+        cache_key = str(p)
+        if cache_key in self._video_cache:
+            return self._video_cache[cache_key]
+        if not p.is_file():
+            return None
+        feats = self._load_video_features(p)
+        if feats is not None:
+            self._video_cache[cache_key] = feats
+        return feats
+
+    def _load_video_features(self, path: Path) -> torch.Tensor | None:
+        suffix = path.suffix.lower()
+        if suffix in (".pt", ".pth", ".bin"):
+            obj = torch.load(path, map_location="cpu")
+            if isinstance(obj, dict):
+                for key in ("video_values", "features", "feats", "x"):
+                    if key in obj:
+                        obj = obj[key]
+                        break
+            if not isinstance(obj, torch.Tensor):
+                obj = torch.tensor(obj, dtype=torch.float32)
+            return self._normalize_video_tensor(obj)
+
+        # Lightweight fallback contract:
+        # when no decoder dependency is available, consume raw frame features
+        # saved as .npy/.npz where axis-0 is temporal and the last axis is feature dim.
+        if suffix == ".npy":
+            import numpy as np
+
+            arr = np.load(path)
+            return self._normalize_video_tensor(torch.from_numpy(arr))
+        if suffix == ".npz":
+            import numpy as np
+
+            arrs = np.load(path)
+            if len(arrs.files) == 0:
+                return None
+            arr = arrs[arrs.files[0]]
+            return self._normalize_video_tensor(torch.from_numpy(arr))
+
+        logger.warning(
+            "Unsupported video file '%s'. Provide precomputed features via .pt/.npy/.npz",
+            path,
+        )
+        return None
+
+    def _normalize_video_tensor(self, value: torch.Tensor) -> torch.Tensor:
+        video = value.detach().to(dtype=torch.float32)
+        if video.ndim == 0:
+            video = video.reshape(1, 1)
+        elif video.ndim == 1:
+            video = video.unsqueeze(0)
+        elif video.ndim >= 3:
+            video = video.reshape(-1, video.shape[-1])
+
+        target_dim = int(getattr(self.cfg, "video_patch_dim", 1024))
+        if target_dim > 0 and video.shape[-1] != target_dim:
+            if video.shape[-1] > target_dim:
+                video = video[..., :target_dim]
+            else:
+                video = torch.nn.functional.pad(video, (0, target_dim - video.shape[-1]))
+        return video.contiguous()
+
 
 def rebuild_unified_dataset_base(
     unified: UnifiedTrainDataset,
@@ -103,6 +187,7 @@ def rebuild_unified_dataset_base(
     data_args.dataset_use = datasets.strip()
     unified._base = LazySupervisedDataset(tokenizer, data_args=data_args)
     unified._audio_cache.clear()
+    unified._video_cache.clear()
     logger.info("Rebuilt train dataset %s (%s samples)", datasets, len(unified))
 
 
@@ -164,29 +249,18 @@ class UnifiedCollator:
             batch["audio_values"] = audio_values
 
         audio_masks = [inst.get("audio_token_mask") for inst in instances]
-        if any(m is not None for m in audio_masks):
-            audio_mask = torch.zeros(seq_len, dtype=torch.bool)
-            if boundaries is not None:
-                for i, local in enumerate(audio_masks):
-                    if local is None:
-                        continue
-                    local_t = local if isinstance(local, torch.Tensor) else torch.tensor(local)
-                    local_t = local_t.to(dtype=torch.bool).view(-1)
-                    start = int(boundaries[i].item()) if i < len(boundaries) else 0
-                    end = int(boundaries[i + 1].item()) if i + 1 < len(boundaries) else seq_len
-                    span = max(end - start, 0)
-                    n = min(span, local_t.numel())
-                    if n > 0:
-                        audio_mask[start : start + n] = local_t[:n]
-            else:
-                local = audio_masks[0]
-                if local is not None:
-                    local_t = local if isinstance(local, torch.Tensor) else torch.tensor(local)
-                    local_t = local_t.to(dtype=torch.bool).view(-1)
-                    n = min(seq_len, local_t.numel())
-                    if n > 0:
-                        audio_mask[:n] = local_t[:n]
+        audio_mask = self._pack_token_mask(audio_masks, boundaries, seq_len)
+        if audio_mask is not None:
             batch["audio_token_mask"] = audio_mask
+
+        video_values = [inst.get("video_values") for inst in instances]
+        if any(v is not None for v in video_values):
+            batch["video_values"] = video_values
+
+        video_masks = [inst.get("video_token_mask") for inst in instances]
+        video_mask = self._pack_token_mask(video_masks, boundaries, seq_len)
+        if video_mask is not None:
+            batch["video_token_mask"] = video_mask
 
         from tower.unify.backends import import_data_constants
 
@@ -195,6 +269,39 @@ class UnifiedCollator:
         )
         attach_packed_batch_stats(batch, self.cfg, img_context_token_id)
         return batch
+
+    def _pack_token_mask(
+        self,
+        local_masks: list[Any],
+        boundaries: torch.Tensor | None,
+        seq_len: int,
+    ) -> torch.Tensor | None:
+        if not any(m is not None for m in local_masks):
+            return None
+        packed = torch.zeros(seq_len, dtype=torch.bool)
+        if boundaries is not None:
+            for i, local in enumerate(local_masks):
+                if local is None:
+                    continue
+                local_t = local if isinstance(local, torch.Tensor) else torch.tensor(local)
+                local_t = local_t.to(dtype=torch.bool).view(-1)
+                start = int(boundaries[i].item()) if i < len(boundaries) else 0
+                end = int(boundaries[i + 1].item()) if i + 1 < len(boundaries) else seq_len
+                span = max(end - start, 0)
+                n = min(span, local_t.numel())
+                if n > 0:
+                    packed[start : start + n] = local_t[:n]
+            return packed
+
+        local = local_masks[0]
+        if local is None:
+            return packed
+        local_t = local if isinstance(local, torch.Tensor) else torch.tensor(local)
+        local_t = local_t.to(dtype=torch.bool).view(-1)
+        n = min(seq_len, local_t.numel())
+        if n > 0:
+            packed[:n] = local_t[:n]
+        return packed
 
     def _reconcile_vision_batch(self, batch: dict[str, Any]) -> dict[str, Any]:
         pixel_values = batch.get("pixel_values")

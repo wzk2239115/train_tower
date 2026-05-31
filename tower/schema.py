@@ -15,6 +15,10 @@ class UnifiedSample:
     audio: str | None = None
     audio_values: list[list[float]] | None = None
     audio_token_mask: list[bool] | None = None
+    video: str | None = None
+    # Optional precomputed per-token video features. Preferred shape: [num_video_tokens, feat_dim].
+    video_values: list[list[float]] | list[list[list[float]]] | None = None
+    video_token_mask: list[bool] | None = None
     meta: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -33,6 +37,12 @@ class UnifiedSample:
             out["audio_values"] = self.audio_values
         if self.audio_token_mask is not None:
             out["audio_token_mask"] = self.audio_token_mask
+        if self.video:
+            out["video"] = self.video
+        if self.video_values is not None:
+            out["video_values"] = self.video_values
+        if self.video_token_mask is not None:
+            out["video_token_mask"] = self.video_token_mask
         if self.meta:
             out["meta"] = self.meta
         return out
@@ -44,13 +54,15 @@ def count_image_tags(conversations: list[dict[str, str]]) -> int:
 
 def validate_sample(sample: UnifiedSample) -> str | None:
     if isinstance(sample.image, str):
-        images = [sample.image]
+        images = [sample.image] if sample.image.strip() else []
     else:
-        images = list(sample.image)
+        images = [str(path) for path in sample.image if str(path).strip()]
 
     has_audio_values = sample.audio_values is not None and len(sample.audio_values) > 0
     has_audio_file = bool(sample.audio and Path(sample.audio).is_file())
-    if not images and not has_audio_values and not has_audio_file:
+    has_video_values = sample.video_values is not None and len(sample.video_values) > 0
+    has_video_file = bool(sample.video and Path(sample.video).is_file())
+    if not images and not has_audio_values and not has_audio_file and not has_video_values and not has_video_file:
         return "missing_media"
 
     for path in images:
@@ -58,6 +70,8 @@ def validate_sample(sample: UnifiedSample) -> str | None:
             return "missing_image"
     if sample.audio and not Path(sample.audio).is_file():
         return "missing_audio"
+    if sample.video and not Path(sample.video).is_file():
+        return "missing_video"
 
     if sample.conversations:
         n_tags = count_image_tags(sample.conversations)

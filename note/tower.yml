@@ -46,6 +46,19 @@ exits:
       unified_mt: 0.2
       unified_sft: 0.15
 
+  video_elf:
+    after_layer: 13
+    type: elf_fm
+    latent: video_embed
+    elf_depth: 2
+    description: "L1.7 video — flow on early-fused video embeddings"
+    loss_weights:
+      world_pt: 0.0
+      understanding_warmup: 0.0
+      generation_pt: 0.05
+      unified_mt: 0.2
+      unified_sft: 0.15
+
   understanding_elf:
     after_layer: 21
     type: elf_fm
@@ -80,16 +93,16 @@ stage_shallow_train_layers:
 stage_freeze:
   world_pt:
     train: [world_elf, semantic_elf, audio_elf]
-    freeze: [understanding_elf, generative_elf]
+    freeze: [video_elf, understanding_elf, generative_elf]
   understanding_warmup:
     train: [understanding_elf]
-    freeze: [generative_elf, audio_elf]
+    freeze: [generative_elf, audio_elf, video_elf]
   generation_pt:
-    train: [semantic_elf, audio_elf, generative_elf]
+    train: [semantic_elf, audio_elf, video_elf, generative_elf]
     freeze: []
   unified_mt:
-    train: [world_elf, semantic_elf, audio_elf, understanding_elf, generative_elf]
+    train: [world_elf, semantic_elf, audio_elf, video_elf, understanding_elf, generative_elf]
     freeze: []
   unified_sft:
-    train: [world_elf, semantic_elf, audio_elf, understanding_elf, generative_elf]
+    train: [world_elf, semantic_elf, audio_elf, video_elf, understanding_elf, generative_elf]
     freeze: []

@@ -181,8 +181,8 @@ random init (~500M MoT)
 | world_pt | `scripts/train_tower_world.sh` | Tower JEPA + semantic |
 | UW | `scripts/train_uw.sh` | CE |
 | Gen PT | `scripts/train_gen_pt.sh` | FM |
-| Uni MT | `scripts/train_mt.sh` | **Tower 四探针**（见 tower.yml） |
-| Uni SFT | `scripts/train_sft.sh` | **Tower 四探针**（见 tower.yml） |
+| Uni MT | `scripts/train_mt.sh` | **Tower 多探针**（含 video，见 tower.yml） |
+| Uni SFT | `scripts/train_sft.sh` | **Tower 多探针**（含 video，见 tower.yml） |
 
 Checkpoints: `outputs/pretrain/{world_pt,uw,gen_pt,mt,sft}`
 
@@ -292,10 +292,10 @@ Override datasets: `--datasets blip3o_short_pt,llava_pt`. Python API: `tower.viz
 
 - **Model sizes**: Named presets in `configs/sizes/` (`500m`, `1b`, `tiny_smoke`, …) merge into `configs/model/*/config.json` and scale `note/tower.yml` exit depths at build time. Use `size_preset: 500m` in train yaml or `tower train --config … --size 1b`. Omit for legacy `model_config_path` only.
 - **Model**: SenseNova `NEOChatModel` (MoT) via `tower/unify/build.py` + `SenseNovaTrainModel`
-- **Flow-JEPA Tower** (optional): `tower/unify/flow_tower.py` — multi-exit JEPA + stacked ELF; see [`idea.md`](idea.md) and [`note/tower.yml`](note/tower.yml)
+- **Flow-JEPA Tower** (optional): `tower/unify/flow_tower.py` — multi-exit JEPA + stacked ELF for vision/audio/video/text latents; see [`idea.md`](idea.md) and [`note/tower.yml`](note/tower.yml)
 - **Data**: NEO `LazySupervisedDataset` via `tower/unify/backends/neo.py` + packed collator with `image_gen_indicators`
 - **Freeze schedule**: `tower/train/freeze.py` (UW → und, Gen PT → gen, MT/SFT → all)
-- **Loss**: MT/SFT 默认 **Flow-JEPA Tower** 四探针联合（`use_flow_tower: true`，权重见 `note/tower.yml`）；UW/GenPT 仍为单出口 SenseNova
+- **Loss**: MT/SFT 默认 **Flow-JEPA Tower** 多探针联合（含 video exit，`use_flow_tower: true`，权重见 `note/tower.yml`）；UW/GenPT 仍为单出口 SenseNova
 
 ## Config reference
 
@@ -308,6 +308,9 @@ Override datasets: `--datasets blip3o_short_pt,llava_pt`. Python API: `tower.viz
 | `tokenizer_name_or_path` | Local Qwen tokenizer dir (`configs/tokenizer/qwen3`) |
 | `loss_weights.ce/fm` | CE and FM loss weights |
 | `task_override` | Force `t2i` for generation pretrain |
+| `video_context_token_id` | Optional token id used to locate video injection positions (fallback if no `video_token_mask`) |
+| `video_patch_dim` | Expected feature dim for each video token (dataset loader pads/truncates to this dim) |
+| `video_num_frames` | Training-time target frame count hint for upstream preprocessors (no decoder implied) |
 
 ## Known limitations
 
@@ -316,6 +319,7 @@ Override datasets: `--datasets blip3o_short_pt,llava_pt`. Python API: `tower.viz
 - **FM training**: derived from SenseNova inference logic; may differ from internal training
 - Requires **torch>=2.5** with working CUDA for GPU training
 - **Block-causal + SDPA patch**: 实现位于 `tower/unify/attention.py`，由 `tower/unify/compat.py` 在 `apply_sensenova_transformers_compat()` 时 patch 到 neo_unify；算力平台须 `git pull` 到含该改动的 commit 后才会生效
+- **Video input contract (super-omni v1)**: training expects precomputed video features (`video_values`) or feature files (`.pt` / `.npy` / `.npz`). Full raw video decoding is intentionally not included in-repo to avoid heavyweight runtime deps.
 
 ## Project layout
 

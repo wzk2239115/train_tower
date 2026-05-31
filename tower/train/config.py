@@ -81,6 +81,10 @@ class TrainConfig:
     tower_decoder_prob: float = 0.0
     audio_context_token_id: int = -1
     audio_patch_dim: int = 80
+    video_context_token_id: int = -1
+    # Keep conservative default aligned to common precomputed ViT/CLIP-like video features.
+    video_patch_dim: int = 1024
+    video_num_frames: int = 16
     attn_implementation: str = "sdpa"
     # Step-based curriculum. Each item requires stage + until_step; optional overrides:
     # max_seq_length, max_pixels, min_pixels, per_device_train_batch_size,

@@ -27,7 +27,7 @@ class TowerExitSpec:
     name: str
     after_layer: int
     exit_type: str  # jepa | elf_fm | ce
-    latent: str = "pixel_patch"  # vision_embed | pixel_patch | audio_embed | token_hidden
+    latent: str = "pixel_patch"  # vision_embed | pixel_patch | audio_embed | video_embed | token_hidden
     elf_depth: int = 2
     ema_momentum: float = 0.996
     loss_weights: dict[str, float] = field(default_factory=dict)

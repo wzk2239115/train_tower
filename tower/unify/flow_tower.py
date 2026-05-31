@@ -40,6 +40,12 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
             nn.GELU(),
             nn.Linear(hidden, hidden),
         )
+        video_dim = int(getattr(self.cfg, "video_patch_dim", 1024))
+        self.video_proj = nn.Sequential(
+            nn.Linear(video_dim, hidden),
+            nn.GELU(),
+            nn.Linear(hidden, hidden),
+        )
         self._build_tower_exits()
         self._tower_global_step: int = 0
 
@@ -288,6 +294,10 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
         clean_audio = self._extract_audio_clean(batch)
         if clean_audio is not None and audio_mask.any():
             hidden = self._inject_audio(hidden, clean_audio, audio_mask)
+        video_mask = self._video_token_mask(input_ids, batch)
+        clean_video = self._extract_video_clean(batch)
+        if clean_video is not None and video_mask.any():
+            hidden = self._inject_video(hidden, clean_video, video_mask)
 
         selected = input_ids[0] == self.model.img_context_token_id
         if gen_mode and self._should_cfg_label_drop(batch):
@@ -337,6 +347,9 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
         z_audio = t_audio = None
         if clean_audio is not None and clean_audio.numel() > 0 and audio_mask.any():
             z_audio, t_audio = self._fm_sample(clean_audio)
+        z_video = t_video = None
+        if clean_video is not None and clean_video.numel() > 0 and video_mask.any():
+            z_video, t_video = self._fm_sample(clean_video)
 
         return {
             "hidden": hidden,
@@ -345,11 +358,13 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
             "indicators": indicators,
             "selected": selected,
             "audio_mask": audio_mask,
+            "video_mask": video_mask,
             "text_mask": text_mask,
             "clean_embed_und": clean_embed_und,
             "clean_embed_gen": clean_embed_gen,
             "clean_pixel": clean_pixel,
             "clean_audio": clean_audio,
+            "clean_video": clean_video,
             "clean_text": clean_text,
             "z_world": z_world,
             "t_world": t_world,
@@ -359,6 +374,8 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
             "t_pixel": t_pixel,
             "z_audio": z_audio,
             "t_audio": t_audio,
+            "z_video": z_video,
+            "t_video": t_video,
             "z_text": z_text,
             "t_text": t_text,
             "noise_scale": noise_scale,
@@ -383,6 +400,10 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
             if ctx.get("clean_audio") is None or ctx.get("z_audio") is None:
                 return None
             return ctx["z_audio"], ctx["t_audio"], ctx["clean_audio"]
+        if latent == "video_embed":
+            if ctx.get("clean_video") is None or ctx.get("z_video") is None:
+                return None
+            return ctx["z_video"], ctx["t_video"], ctx["clean_video"]
         if latent == "token_hidden":
             if ctx.get("clean_text") is None or ctx.get("z_text") is None:
                 return None
@@ -397,6 +418,8 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
     ) -> torch.Tensor:
         if spec.latent == "audio_embed":
             return hook_hidden[0, ctx["audio_mask"]]
+        if spec.latent == "video_embed":
+            return hook_hidden[0, ctx["video_mask"]]
         if spec.latent == "token_hidden":
             return hook_hidden[0, ctx["text_mask"]]
         n = min(int(ctx["selected"].sum().item()), hook_hidden.shape[1])
@@ -525,7 +548,7 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
         stop_layer = self._max_hook_layer(active)
         hook_layers = {spec.after_layer for spec in active}
 
-        if not self._batch_has_images(batch) and not self._batch_has_audio(batch):
+        if not self._batch_has_images(batch) and not self._batch_has_audio(batch) and not self._batch_has_video(batch):
             ctx = self._prepare_text_batch(batch)
             if ctx is not None:
                 hooks = self._run_backbone_layers(
@@ -541,7 +564,7 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
                 )
             return total
 
-        und_latents = {"vision_embed_und", "token_hidden", "audio_embed"}
+        und_latents = {"vision_embed_und", "token_hidden", "audio_embed", "video_embed"}
         if any(s.latent in und_latents for s in active):
             ctx = self._prepare_tower_batch(batch, gen_mode=False)
             if ctx is not None:
@@ -555,7 +578,7 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
                 )
                 total = total + self._accumulate_exit_losses(active, hooks, ctx, latents=und_latents)
 
-        gen_latents = {"vision_embed", "pixel_patch", "audio_embed"}
+        gen_latents = {"vision_embed", "pixel_patch", "audio_embed", "video_embed"}
         if any(s.latent in gen_latents for s in active):
             ctx = self._prepare_tower_batch(batch, gen_mode=True)
             if ctx is not None:
@@ -583,6 +606,14 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
             return len(audio_values) > 0 and audio_values[0] is not None
         return True
 
+    def _batch_has_video(self, batch: dict[str, Any]) -> bool:
+        video_values = batch.get("video_values")
+        if video_values is None:
+            return False
+        if isinstance(video_values, (list, tuple)):
+            return len(video_values) > 0 and video_values[0] is not None
+        return True
+
     def _audio_token_mask(self, input_ids: torch.Tensor, batch: dict[str, Any]) -> torch.Tensor:
         provided = batch.get("audio_token_mask")
         if isinstance(provided, torch.Tensor):
@@ -596,6 +627,21 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
             audio_id = getattr(self.cfg, "audio_context_token_id", -1)
         if int(audio_id) >= 0:
             return input_ids[0] == int(audio_id)
+        return torch.zeros(input_ids.shape[1], dtype=torch.bool, device=input_ids.device)
+
+    def _video_token_mask(self, input_ids: torch.Tensor, batch: dict[str, Any]) -> torch.Tensor:
+        provided = batch.get("video_token_mask")
+        if isinstance(provided, torch.Tensor):
+            mask = provided
+            if mask.ndim == 2:
+                mask = mask[0]
+            return mask.to(device=input_ids.device, dtype=torch.bool)
+
+        video_id = getattr(self.model, "video_context_token_id", None)
+        if video_id is None:
+            video_id = getattr(self.cfg, "video_context_token_id", -1)
+        if int(video_id) >= 0:
+            return input_ids[0] == int(video_id)
         return torch.zeros(input_ids.shape[1], dtype=torch.bool, device=input_ids.device)
 
     def _extract_audio_clean(self, batch: dict[str, Any]) -> torch.Tensor | None:
@@ -626,6 +672,34 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
         clean_audio = self.audio_proj(audio)
         return clean_audio.reshape(-1, clean_audio.shape[-1]).detach()
 
+    def _extract_video_clean(self, batch: dict[str, Any]) -> torch.Tensor | None:
+        video_values = batch.get("video_values")
+        if video_values is None:
+            return None
+        if isinstance(video_values, (list, tuple)):
+            if len(video_values) == 0 or video_values[0] is None:
+                return None
+            video = video_values[0]
+        else:
+            video = video_values
+        if not isinstance(video, torch.Tensor):
+            video = torch.tensor(video)
+        video = video.to(device=self.device, dtype=self.dtype)
+        if video.ndim == 3 and video.shape[0] == 1:
+            video = video[0]
+        if video.ndim == 1:
+            video = video.unsqueeze(0)
+        elif video.ndim >= 3:
+            video = video.reshape(-1, video.shape[-1])
+        in_dim = self.video_proj[0].in_features
+        if video.shape[-1] != in_dim:
+            if video.shape[-1] > in_dim:
+                video = video[..., :in_dim]
+            else:
+                video = torch.nn.functional.pad(video, (0, in_dim - video.shape[-1]))
+        clean_video = self.video_proj(video)
+        return clean_video.reshape(-1, clean_video.shape[-1]).detach()
+
     def _inject_audio(
         self,
         hidden: torch.Tensor,
@@ -638,7 +712,24 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
         n = min(int(audio_mask.sum().item()), clean_audio.shape[0])
         if n <= 0:
             return hidden
-        hidden[0, audio_mask][:n] = clean_audio[:n]
+        token_ids = torch.nonzero(audio_mask, as_tuple=False).view(-1)
+        hidden[0, token_ids[:n]] = clean_audio[:n]
+        return hidden
+
+    def _inject_video(
+        self,
+        hidden: torch.Tensor,
+        clean_video: torch.Tensor,
+        video_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        if clean_video.numel() == 0 or not video_mask.any():
+            return hidden
+        hidden = hidden.clone()
+        n = min(int(video_mask.sum().item()), clean_video.shape[0])
+        if n <= 0:
+            return hidden
+        token_ids = torch.nonzero(video_mask, as_tuple=False).view(-1)
+        hidden[0, token_ids[:n]] = clean_video[:n]
         return hidden
 
     def _has_supervised_tokens(self, batch: dict[str, Any]) -> bool:
