@@ -15,17 +15,17 @@ WORKERS=16 ./scripts/convert.sh blip3o_long
 EXTRACT_ONLY=1 WORKERS=16 ./scripts/convert.sh blip3o_long
 JSONL_ONLY=1  WORKERS=16 ./scripts/convert.sh blip3o_long
 
-# 训练依赖（NEO + SenseNova-U1）
+# 训练依赖（NEO data + SenseNova neo_unify）
 
-源码已 vendoring 在 `third_party/`，拷到内网服务器后无需再 clone / 建 symlink：
+源码在 `tower/neo/` 与 `tower/models/neo_unify/`（in-tree），拷到内网服务器后无需 PYTHONPATH：
 
 ```bash
 pip install -e ".[train]"
-python -c "from tower.paths import ensure_train_paths; ensure_train_paths(); import neo.data; print('neo OK')"
+python -c "from tower.unify.backends import import_neo_data, import_neo_chat_config; import_neo_data(); import_neo_chat_config(); print('OK')"
 MAX_STEPS=10 DATASETS=blip3o_short_pt ./scripts/train_smoke.sh
 ```
 
-若 `third_party/NEO` 缺失，运行 `./scripts/vendor_third_party.sh` 重新同步。
+若缺失，运行 `./scripts/vendor_third_party.sh` 从 upstream 同步到 `tower/`。
 
 # manifest 与 jsonl 不同步
 

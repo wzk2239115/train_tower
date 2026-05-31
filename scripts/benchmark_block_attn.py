@@ -18,9 +18,6 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from tower.paths import ensure_train_paths
-
-
 def _cosine(a: torch.Tensor, b: torch.Tensor) -> float:
     a_flat = a.reshape(-1).float()
     b_flat = b.reshape(-1).float()
@@ -56,12 +53,15 @@ def main() -> int:
     parser.add_argument("--dtype", default="bfloat16", choices=["float32", "bfloat16", "float16"])
     args = parser.parse_args()
 
-    ensure_train_paths()
-    from sensenova_u1.models.neo_unify.modeling_qwen3 import (
+    from tower.unify.compat import apply_sensenova_transformers_compat
+    from tower.unify.backends import (
         create_block_causal_mask,
-        eager_attention_forward,
+        get_eager_attention_forward_unpatched,
         sdpa_block_attention_forward,
     )
+
+    apply_sensenova_transformers_compat()
+    eager_attention_forward = get_eager_attention_forward_unpatched()
 
     device = torch.device(args.device if args.device != "cuda" or torch.cuda.is_available() else "cpu")
     dtype = getattr(torch, args.dtype)

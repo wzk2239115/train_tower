@@ -5,8 +5,14 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
+from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
 
-from tower.paths import ensure_train_paths
+from tower.unify import attention
+from tower.unify.backends.sensenova import (
+    import_modeling_neo_chat,
+    import_modeling_qwen3,
+    import_modeling_qwen3_moe,
+)
 
 _APPLIED = False
 _SDPA_BLOCK_ATTN_PATCHED = False
@@ -22,12 +28,8 @@ def sdpa_block_attention_forward(
     dropout: float = 0.0,
     **kwargs,
 ):
-    """Re-export native SDPA path from modeling_qwen3 (compat fallback entry point)."""
-    from sensenova_u1.models.neo_unify.modeling_qwen3 import (
-        sdpa_block_attention_forward as _native_sdpa_block_attention_forward,
-    )
-
-    return _native_sdpa_block_attention_forward(
+    """Fused block-causal SDPA (train_tower implementation in ``tower.unify.attention``)."""
+    return attention.sdpa_block_attention_forward(
         module,
         query,
         key,
@@ -40,34 +42,68 @@ def sdpa_block_attention_forward(
 
 
 def _patch_block_causal_attention() -> None:
-    """Route block-causal masks through fused SDPA when third_party lacks native support."""
+    """Route block-causal masks through fused SDPA on all Qwen3 attention dispatch paths."""
     global _SDPA_BLOCK_ATTN_PATCHED
     if _SDPA_BLOCK_ATTN_PATCHED or os.environ.get("TOWER_DISABLE_SDPA_BLOCK_ATTN", "0") == "1":
         return
 
-    from sensenova_u1.models.neo_unify import modeling_qwen3 as sn_qwen3
     from transformers.utils import logging
 
+    sn_qwen3 = import_modeling_qwen3()
     log = logging.get_logger(__name__)
 
     if getattr(sn_qwen3, "_NATIVE_SDPA_BLOCK_ATTN", False):
         _SDPA_BLOCK_ATTN_PATCHED = True
         log.warning(
-            "Block-causal attention: native SDPA already in modeling_qwen3 "
+            "Block-causal attention: native SDPA already patched "
             "(compat monkey-patch skipped)"
         )
         return
 
-    _orig = sn_qwen3.eager_attention_forward
+    orig_eager = sn_qwen3.eager_attention_forward
+    orig_all = {name: fn for name, fn in ALL_ATTENTION_FUNCTIONS.items()}
 
-    def _dispatch(module, query, key, value, attention_mask, scaling, dropout=0.0, **kwargs):
-        if attention_mask is not None:
-            return sdpa_block_attention_forward(
-                module, query, key, value, attention_mask, scaling, dropout=dropout, **kwargs
+    def _wrap(base_fn):
+        def wrapped(module, query, key, value, attention_mask, scaling, dropout=0.0, **kwargs):
+            if attention_mask is not None:
+                return attention.sdpa_block_attention_forward(
+                    module,
+                    query,
+                    key,
+                    value,
+                    attention_mask,
+                    scaling,
+                    dropout=dropout,
+                    **kwargs,
+                )
+            return base_fn(
+                module,
+                query,
+                key,
+                value,
+                attention_mask,
+                scaling,
+                dropout=dropout,
+                **kwargs,
             )
-        return _orig(module, query, key, value, attention_mask, scaling, dropout=dropout, **kwargs)
 
-    sn_qwen3.eager_attention_forward = _dispatch
+        return wrapped
+
+    sn_qwen3.eager_attention_forward_unpatched = orig_eager
+    sn_qwen3.eager_attention_forward = _wrap(orig_eager)
+    for name, fn in orig_all.items():
+        ALL_ATTENTION_FUNCTIONS[name] = _wrap(fn)
+
+    def _resolve(attention_mask, attn_implementation):
+        return attention.resolve_attention_interface(
+            attention_mask,
+            attn_implementation,
+            eager_attention_forward=orig_eager,
+        )
+
+    sn_qwen3.sdpa_block_attention_forward = attention.sdpa_block_attention_forward
+    sn_qwen3.resolve_attention_interface = _resolve
+    sn_qwen3._NATIVE_SDPA_BLOCK_ATTN = True
     _SDPA_BLOCK_ATTN_PATCHED = True
     log.warning(
         "Patched block-causal attention: eager L×L materialization → fused SDPA "
@@ -80,9 +116,8 @@ def apply_sensenova_transformers_compat() -> None:
     global _APPLIED
     if _APPLIED:
         return
-    ensure_train_paths()
 
-    from sensenova_u1.models.neo_unify import modeling_qwen3 as sn_qwen3
+    sn_qwen3 = import_modeling_qwen3()
 
     cls = sn_qwen3.Qwen3RotaryEmbedding
     if not hasattr(cls, "compute_default_rope_parameters"):
@@ -100,8 +135,7 @@ def apply_sensenova_transformers_compat() -> None:
             model_cls._tied_weights_keys = {"lm_head.weight": "model.embed_tokens.weight"}
 
     try:
-        from sensenova_u1.models.neo_unify import modeling_qwen3_moe as sn_moe
-
+        sn_moe = import_modeling_qwen3_moe()
         tied = getattr(sn_moe.Qwen3MoeForCausalLM, "_tied_weights_keys", None)
         if isinstance(tied, list):
             sn_moe.Qwen3MoeForCausalLM._tied_weights_keys = {
@@ -110,12 +144,8 @@ def apply_sensenova_transformers_compat() -> None:
     except ImportError:
         pass
 
-    # transformers 5.x may access ``all_tied_weights_keys`` on top-level model
-    # during loading report finalization. SenseNova's NEOChatModel does not
-    # define it, so provide a harmless fallback to avoid AttributeError.
     try:
-        from sensenova_u1.models.neo_unify import modeling_neo_chat as sn_chat
-
+        sn_chat = import_modeling_neo_chat()
         if not hasattr(sn_chat.NEOChatModel, "all_tied_weights_keys"):
             sn_chat.NEOChatModel.all_tied_weights_keys = {}
     except ImportError:
@@ -140,14 +170,6 @@ def fix_llm_config_compat(config) -> None:
         ]
 
 
-def _unwrap_singleton(value):
-    """Unwrap nested singleton list/tuple values (e.g. [[0.5]] -> 0.5)."""
-    cur = value
-    while isinstance(cur, (list, tuple)) and len(cur) == 1:
-        cur = cur[0]
-    return cur
-
-
 def fix_vision_config_compat(config) -> None:
     """Normalize SenseNova vision/downsample fields for legacy checkpoints."""
     vc = getattr(config, "vision_config", None)
@@ -157,10 +179,16 @@ def fix_vision_config_compat(config) -> None:
     ds = _unwrap_singleton(getattr(vc, "downsample_ratio", 0.5))
     llm_h = _unwrap_singleton(getattr(vc, "llm_hidden_size", 0))
 
-    # modeling_neo_vit indexes these fields with [0]
     vc.downsample_ratio = [float(ds)]
     vc.llm_hidden_size = [int(llm_h)]
 
-    # modeling_neo_chat expects a scalar downsample_ratio on top-level config
     if hasattr(config, "downsample_ratio"):
         config.downsample_ratio = float(_unwrap_singleton(getattr(config, "downsample_ratio")))
+
+
+def _unwrap_singleton(value):
+    """Unwrap nested singleton list/tuple values (e.g. [[0.5]] -> 0.5)."""
+    cur = value
+    while isinstance(cur, (list, tuple)) and len(cur) == 1:
+        cur = cur[0]
+    return cur

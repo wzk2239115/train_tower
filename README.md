@@ -11,9 +11,9 @@ pip install -e ".[train]"
 python scripts/estimate_params.py         # verify ~500M param count
 ```
 
-Training code (**NEO** + **SenseNova-U1**) is **vendored in-repo** under `third_party/` (~1.5 MB source). Copy the repo to an offline server and train — no git submodule or symlink setup required.
+Training code (**NEO** data + **SenseNova-U1** MoT model) lives **in-tree** under `tower/neo/` and `tower/models/neo_unify/`. Copy the repo to an offline server and train — no submodule or `PYTHONPATH` setup required.
 
-To refresh vendored upstream source:
+To refresh from upstream:
 
 ```bash
 ./scripts/vendor_third_party.sh
@@ -21,14 +21,7 @@ To refresh vendored upstream source:
 ./scripts/vendor_third_party.sh --from-local /path/to/NEO /path/to/SenseNova-U1
 ```
 
-Third-party layout:
-
-```
-third_party/
-├── NEO/              # VLMTrainKit (neo package)
-├── SenseNova-U1/     # src/sensenova_u1 (MoT model)
-└── VENDOR_REVISIONS  # pinned upstream commits
-```
+Layout and attribution: see [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md). Pinned upstream commits: [`scripts/VENDOR_REVISIONS`](scripts/VENDOR_REVISIONS).
 
 ## 开发机与算力平台（当前协作方式）
 
@@ -46,8 +39,8 @@ git rev-parse HEAD
 
 **跑 H800 续训前建议在算力平台确认**：
 
-1. 日志出现 `Block-causal attention: native fused SDPA`（或 compat 兜底时的 monkey-patch 日志；没有则说明未 `git pull` 到最新 commit）。
-2. `grep sdpa_block_attention_forward third_party/SenseNova-U1/src/sensenova_u1/models/neo_unify/modeling_qwen3.py` 有命中（原生 SDPA，不依赖 compat 是否加载）。
+1. 日志出现 `Block-causal attention: native fused SDPA`（`tower/unify/compat.py` 在训练启动时 monkey-patch；没有则说明未 `git pull` 到最新 commit）。
+2. `grep sdpa_block_attention_forward tower/unify/attention.py` 有命中（train_tower 侧 SDPA 实现；vendor `modeling_qwen3.py` 保持 upstream 干净）。
 3. `max` profile 时出现 `[vram_tune]`，且 `per_device_train_batch_size` / `max_pixels` 被压到与 `stable` 同量级（pack 条数 + 像素，不是单纯加大 micro-batch）。
 4. 算力平台若未 pull 到含修复的 commit：`max` 仍可能 OOM 在 `eager_attention_forward` → `softmax(attn_weights)`（旧版 eager 路径）。
 
@@ -68,7 +61,7 @@ git rev-parse HEAD
 
 **为何 `stable` 能跑、`max` 曾 OOM**：UW / Gen PT 使用 `create_block_causal_mask`；SenseNova 原实现对带 mask 的路径走 **eager attention**，在 `softmax` 前物化完整 `[B, H, L, L]` 权重（`L≈8192` 时单层约 3GiB）。数据侧 `data_flatten` 下 yaml 里的 `per_device_train_batch_size` 表示 **pack 进同一条序列的样本条数**，序列越长显存按约 **L²** 增长；**`gradient_accumulation_steps` 不降低单步峰值显存**。
 
-**本质修复**（`third_party/SenseNova-U1/.../modeling_qwen3.py`，`compat.py` 仅作幂等兜底）：带 block mask 的 attention 原生走 **fused SDPA**（禁止 MATH 后端），`create_block_causal_mask` 产出 bf16 掩码，避免分配 L×L 分数矩阵。仅调 yaml batch/pixels 无法根治该 OOM。
+**本质修复**（`tower/unify/attention.py`，由 `compat.py` 在运行时 patch 到 neo_unify）：带 block mask 的 attention 走 **fused SDPA**（禁止 MATH 后端），`create_block_causal_mask` 产出 bf16 掩码，避免分配 L×L 分数矩阵。vendor `modeling_qwen3.py` 保持 upstream 干净。仅调 yaml batch/pixels 无法根治该 OOM。
 
 **辅助**（`tower/train/vram_tune.py`）：`H800_PROFILE=max` 时将 pack 条数 / `max_pixels` / `max_seq_length` 限制在 `stable` 锚点内，用 **grad_accum** 提高全局 batch（默认目标 160 = 8×8×3）。
 
@@ -267,7 +260,7 @@ Override datasets: `--datasets blip3o_short_pt,llava_pt`. Python API: `tower.viz
 
 - **Model**: SenseNova `NEOChatModel` (MoT) via `tower/unify/build.py` + `SenseNovaTrainModel`
 - **Flow-JEPA Tower** (optional): `tower/unify/flow_tower.py` — multi-exit JEPA + stacked ELF; see [`idea.md`](idea.md) and [`note/tower.yml`](note/tower.yml)
-- **Data**: NEO `LazySupervisedDataset` + packed collator with `image_gen_indicators`
+- **Data**: NEO `LazySupervisedDataset` via `tower/unify/backends/neo.py` + packed collator with `image_gen_indicators`
 - **Freeze schedule**: `tower/train/freeze.py` (UW → und, Gen PT → gen, MT/SFT → all)
 - **Loss**: MT/SFT 默认 **Flow-JEPA Tower** 四探针联合（`use_flow_tower: true`，权重见 `note/tower.yml`）；UW/GenPT 仍为单出口 SenseNova
 
@@ -288,7 +281,7 @@ Override datasets: `--datasets blip3o_short_pt,llava_pt`. Python API: `tower.viz
 - **500M capacity**: structural alignment with 8B-MoT, not quality parity
 - **FM training**: derived from SenseNova inference logic; may differ from internal training
 - Requires **torch>=2.5** with working CUDA for GPU training
-- **Block-causal + SDPA patch**: 依赖 `tower/unify/compat.py` 在 `apply_sensenova_transformers_compat()` 时打补丁；算力平台须 `git pull` 到含该改动的 commit 后才会生效
+- **Block-causal + SDPA patch**: 实现位于 `tower/unify/attention.py`，由 `tower/unify/compat.py` 在 `apply_sensenova_transformers_compat()` 时 patch 到 neo_unify；算力平台须 `git pull` 到含该改动的 commit 后才会生效
 
 ## Project layout
 
@@ -302,7 +295,7 @@ train_tower/
 │   ├── convert/
 │   ├── train/                      # trainer, vram_tune, freeze, dataset
 │   ├── viz/                        # CLI + plots (data stats, metrics)
-│   └── unify/                      # build, compat (SDPA block attn), SenseNovaTrainModel
+│   └── unify/                      # build, attention, compat, backends/{neo,sensenova}
 ├── exports/viz/                    # saved plots & stage_selections.yml
 ├── note/train.yml
 └── scripts/

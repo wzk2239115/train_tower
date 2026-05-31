@@ -1,27 +1,27 @@
 #!/usr/bin/env bash
-# One-shot source setup: pip deps + tokenizer + third_party sanity check.
+# One-shot source setup: pip deps + tokenizer + in-tree upstream sanity check.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 pip install -e ".[train,viz]"
 
-if [[ ! -f third_party/NEO/neo/data/__init__.py ]]; then
-  echo "Missing vendored NEO source. Run: ./scripts/vendor_third_party.sh" >&2
+if [[ ! -f tower/neo/data/__init__.py ]]; then
+  echo "Missing tower/neo data pipeline. Run: ./scripts/vendor_third_party.sh" >&2
   exit 1
 fi
-if [[ ! -f third_party/SenseNova-U1/src/sensenova_u1/__init__.py ]]; then
-  echo "Missing vendored SenseNova-U1 source. Run: ./scripts/vendor_third_party.sh" >&2
+if [[ ! -f tower/models/neo_unify/__init__.py ]]; then
+  echo "Missing tower/models/neo_unify. Run: ./scripts/vendor_third_party.sh" >&2
   exit 1
 fi
 
 "${ROOT}/scripts/fetch_tokenizer.sh"
 
 python -c "
-from tower.paths import ensure_train_paths
-ensure_train_paths()
-import neo.data
-print('third_party OK: neo + sensenova source present')
+from tower.unify.backends import import_neo_data, import_neo_chat_config
+import_neo_data()
+import_neo_chat_config()
+print('tower/neo + tower/models/neo_unify OK')
 "
 
 echo "Setup complete. Try: MAX_STEPS=10 DATASETS=blip3o_short_pt ./scripts/train_smoke.sh"

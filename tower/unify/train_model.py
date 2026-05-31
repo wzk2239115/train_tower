@@ -17,7 +17,9 @@ logger = logging.get_logger(__name__)
 
 def _build_indexes_with_hw(model, input_ids, indexes, image_grid_hw):
     """Augment NEO temporal indexes with spatial h/w for image context tokens."""
-    from sensenova_u1.models.neo_unify.modeling_neo_vit import build_abs_positions_from_grid_hw
+    from tower.unify.backends import import_build_abs_positions_from_grid_hw
+
+    build_abs_positions_from_grid_hw = import_build_abs_positions_from_grid_hw()
 
     if indexes.ndim == 1:
         indexes = indexes.unsqueeze(0)
@@ -246,7 +248,7 @@ class SenseNovaTrainModel(nn.Module):
             input_ids, hidden, batch.get("pixel_values"), batch.get("image_grid_hw"), gen=False
         )
 
-        from sensenova_u1.models.neo_unify.modeling_qwen3 import create_block_causal_mask
+        from tower.unify.backends import create_block_causal_mask
 
         attn = {"full_attention": create_block_causal_mask(indexes[0])}
         indicators = batch.get("image_gen_indicators")
@@ -338,7 +340,7 @@ class SenseNovaTrainModel(nn.Module):
             hidden = self._apply_cfg_label_drop(hidden, selected)
 
         indexes = _build_indexes_with_hw(self.model, input_ids, batch["indexes"], batch.get("image_grid_hw"))
-        from sensenova_u1.models.neo_unify.modeling_qwen3 import create_block_causal_mask
+        from tower.unify.backends import create_block_causal_mask
 
         attn = {"full_attention": create_block_causal_mask(indexes[0])}
         indicators = torch.ones(seq_len, dtype=torch.bool, device=self.device)

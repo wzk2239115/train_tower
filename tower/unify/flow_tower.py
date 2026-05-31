@@ -213,7 +213,7 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
         indexes = _build_indexes_with_hw(
             self.model, input_ids, batch["indexes"], batch.get("image_grid_hw")
         )
-        from sensenova_u1.models.neo_unify.modeling_qwen3 import create_block_causal_mask
+        from tower.unify.backends import create_block_causal_mask
 
         return {
             "input_ids": input_ids,
@@ -303,7 +303,7 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
         indexes = _build_indexes_with_hw(
             self.model, input_ids, batch["indexes"], batch.get("image_grid_hw")
         )
-        from sensenova_u1.models.neo_unify.modeling_qwen3 import create_block_causal_mask
+        from tower.unify.backends import create_block_causal_mask
 
         attn = {"full_attention": create_block_causal_mask(indexes[0])}
 

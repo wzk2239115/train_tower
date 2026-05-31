@@ -41,8 +41,9 @@ class ElfFlowTowerExit(nn.Module):
         if t_embedder is not None:
             self.t_embedder = t_embedder
         else:
-            from sensenova_u1.models.neo_unify.modeling_fm_modules import TimestepEmbedder
+            from tower.unify.backends import import_timestep_embedder
 
+            TimestepEmbedder = import_timestep_embedder()
             self.t_embedder = TimestepEmbedder(hidden_size)
         self.blocks = nn.ModuleList([_ElfBlock(hidden_size) for _ in range(max(elf_depth, 1))])
         self.fm_head = nn.Sequential(

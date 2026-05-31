@@ -87,8 +87,10 @@ class UnifiedTrainDataset:
 
 
 def make_unified_data_module(tokenizer, data_args, training_args, cfg: TrainConfig):
-    from neo.data.data_processor import FlattenedDataCollatorForSupervisedDataset, LazySupervisedDataset
+    from tower.unify.backends import import_flattened_data_collator, import_lazy_supervised_dataset
 
+    LazySupervisedDataset = import_lazy_supervised_dataset()
+    FlattenedDataCollatorForSupervisedDataset = import_flattened_data_collator()
     base = LazySupervisedDataset(tokenizer, data_args=data_args)
     train_dataset = UnifiedTrainDataset(base, cfg)
     curriculum_runtime = CurriculumRuntime(cfg)
@@ -166,9 +168,11 @@ class UnifiedCollator:
                         audio_mask[:n] = local_t[:n]
             batch["audio_token_mask"] = audio_mask
 
-        from neo.data.constants import IMG_CONTEXT_TOKEN
+        from tower.unify.backends import import_data_constants
 
-        img_context_token_id = self.base_collator.tokenizer.convert_tokens_to_ids(IMG_CONTEXT_TOKEN)
+        img_context_token_id = self.base_collator.tokenizer.convert_tokens_to_ids(
+            import_data_constants().IMG_CONTEXT_TOKEN
+        )
         attach_packed_batch_stats(batch, self.cfg, img_context_token_id)
         return batch
 

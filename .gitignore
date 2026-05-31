@@ -10,7 +10,7 @@ outputs/
 # Viz CLI plots (generated locally / on server)
 exports/viz/*.png
 
-# Vendor script clone cache (source lives in third_party/NEO and third_party/SenseNova-U1)
+# Vendor script clone cache (upstream synced into tower/neo and tower/models/neo_unify)
 .vendor_cache/
 
 # Python

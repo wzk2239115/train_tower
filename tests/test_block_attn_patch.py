@@ -1,6 +1,13 @@
 import torch
 
 from tower.unify.compat import apply_sensenova_transformers_compat, sdpa_block_attention_forward
+from tower.unify.backends import (
+    create_block_causal_mask,
+    get_eager_attention_forward_unpatched,
+    get_resolve_attention_interface,
+    import_modeling_qwen3,
+    sdpa_block_attention_forward as backend_sdpa,
+)
 
 
 def _fake_module():
@@ -13,10 +20,10 @@ def _fake_module():
 
 def test_native_sdpa_flag_and_compat_skips_monkey_patch():
     apply_sensenova_transformers_compat()
-    from sensenova_u1.models.neo_unify import modeling_qwen3 as sn_qwen3
+    sn_qwen3 = import_modeling_qwen3()
 
     assert getattr(sn_qwen3, "_NATIVE_SDPA_BLOCK_ATTN", False)
-    # Native path: eager_attention_forward stays the original (returns attn weights).
+    eager_unpatched = get_eager_attention_forward_unpatched()
     mod = _fake_module()
     b, h, l, d = 1, 4, 32, 16
     q = torch.randn(b, h, l, d, dtype=torch.float32)
@@ -24,25 +31,21 @@ def test_native_sdpa_flag_and_compat_skips_monkey_patch():
     v = torch.randn(b, h, l, d, dtype=torch.float32)
     mask = torch.zeros(1, 1, l, l)
 
-    _, weights = sn_qwen3.eager_attention_forward(mod, q, k, v, mask, scaling=d**-0.5)
+    _, weights = eager_unpatched(mod, q, k, v, mask, scaling=d**-0.5)
     assert weights is not None
 
 
 def test_resolve_attention_interface_uses_sdpa_with_mask():
-    from sensenova_u1.models.neo_unify.modeling_qwen3 import (
-        resolve_attention_interface,
-        sdpa_block_attention_forward,
-    )
+    apply_sensenova_transformers_compat()
+    resolve_attention_interface = get_resolve_attention_interface()
 
     fn = resolve_attention_interface(torch.zeros(1), "eager")
-    assert fn is sdpa_block_attention_forward
+    assert fn is backend_sdpa
 
 
 def test_sdpa_matches_eager_numerically():
-    from sensenova_u1.models.neo_unify.modeling_qwen3 import (
-        create_block_causal_mask,
-        eager_attention_forward,
-    )
+    apply_sensenova_transformers_compat()
+    eager_attention_forward = get_eager_attention_forward_unpatched()
 
     mod = _fake_module()
     b, h, l, d = 1, 4, 64, 16

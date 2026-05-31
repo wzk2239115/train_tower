@@ -33,7 +33,9 @@ def build_data_dict() -> dict[str, dict[str, str]]:
 
 def inject_data_dict() -> None:
     """Register train_tower datasets into NEO neo.data module."""
-    import neo.data as neo_data
+    from tower.unify.backends import import_neo_data
+
+    neo_data = import_neo_data()
 
     data_dict = build_data_dict()
     neo_data.data_dict.update(data_dict)

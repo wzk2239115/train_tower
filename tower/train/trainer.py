@@ -10,7 +10,6 @@ from transformers import HfArgumentParser, Trainer, set_seed
 from transformers.optimization import get_scheduler
 from transformers.utils import logging
 
-from tower.paths import ensure_train_paths
 from tower.train.config import TrainConfig
 from tower.train.curriculum import CurriculumCallback
 from tower.train.dataset import make_unified_data_module
@@ -186,10 +185,11 @@ def _run_dataloader_preflight(trainer: Trainer, steps: int) -> None:
 
 
 def run_training(cfg: TrainConfig) -> None:
-    ensure_train_paths()
     inject_data_dict()
 
-    from neo.train.argument import DataArguments, TrainingArguments
+    from tower.unify.backends import import_train_arguments
+
+    DataArguments, TrainingArguments = import_train_arguments()
 
     cfg = apply_h800_vram_tune(cfg)
 
