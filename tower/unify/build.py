@@ -7,7 +7,11 @@ from transformers import AutoTokenizer
 from tower.config import PROJECT_ROOT
 from tower.paths import ensure_train_paths
 from tower.train.config import TrainConfig
-from tower.unify.compat import apply_sensenova_transformers_compat, fix_llm_config_compat
+from tower.unify.compat import (
+    apply_sensenova_transformers_compat,
+    fix_llm_config_compat,
+    fix_vision_config_compat,
+)
 
 
 def _resolve_attn_implementation(requested: str) -> str:
@@ -82,6 +86,7 @@ def build_scratch_model(cfg: TrainConfig):
 
     config = NEOChatConfig.from_pretrained(config_path)
     fix_llm_config_compat(config)
+    fix_vision_config_compat(config)
     model = NEOChatModel(config)
     _apply_attn_implementation(model, cfg.attn_implementation)
     return model
@@ -91,13 +96,17 @@ def build_checkpoint_model(cfg: TrainConfig):
     """Load a prior training checkpoint."""
     apply_sensenova_transformers_compat()
     ensure_train_paths()
+    from sensenova_u1.models.neo_unify.configuration_neo_chat import NEOChatConfig
     from sensenova_u1.models.neo_unify.modeling_neo_chat import NEOChatModel
 
     ckpt = _resolve_path(cfg.model_name_or_path)
     if not ckpt:
         raise ValueError("model_name_or_path is required for checkpoint init")
     dtype = "bfloat16" if cfg.bf16 else "float32"
-    model = NEOChatModel.from_pretrained(ckpt, torch_dtype=dtype)
+    config = NEOChatConfig.from_pretrained(ckpt)
+    fix_llm_config_compat(config)
+    fix_vision_config_compat(config)
+    model = NEOChatModel.from_pretrained(ckpt, config=config, torch_dtype=dtype)
     _apply_attn_implementation(model, cfg.attn_implementation)
     return model
 

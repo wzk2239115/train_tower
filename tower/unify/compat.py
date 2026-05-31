@@ -56,3 +56,29 @@ def fix_llm_config_compat(config) -> None:
             "sliding_attention" if (use_swa and i >= max_window) else "full_attention"
             for i in range(lc.num_hidden_layers)
         ]
+
+
+def _unwrap_singleton(value):
+    """Unwrap nested singleton list/tuple values (e.g. [[0.5]] -> 0.5)."""
+    cur = value
+    while isinstance(cur, (list, tuple)) and len(cur) == 1:
+        cur = cur[0]
+    return cur
+
+
+def fix_vision_config_compat(config) -> None:
+    """Normalize SenseNova vision/downsample fields for legacy checkpoints."""
+    vc = getattr(config, "vision_config", None)
+    if vc is None:
+        return
+
+    ds = _unwrap_singleton(getattr(vc, "downsample_ratio", 0.5))
+    llm_h = _unwrap_singleton(getattr(vc, "llm_hidden_size", 0))
+
+    # modeling_neo_vit indexes these fields with [0]
+    vc.downsample_ratio = [float(ds)]
+    vc.llm_hidden_size = [int(llm_h)]
+
+    # modeling_neo_chat expects a scalar downsample_ratio on top-level config
+    if hasattr(config, "downsample_ratio"):
+        config.downsample_ratio = float(_unwrap_singleton(getattr(config, "downsample_ratio")))
