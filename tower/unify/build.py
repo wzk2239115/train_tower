@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from transformers import AutoTokenizer
@@ -62,12 +63,35 @@ def build_tokenizer(cfg: TrainConfig):
         raise ValueError("tokenizer_name_or_path is required")
     from neo.data.constants import ALL_SPECIAL_TOKEN_LIST
 
-    tokenizer = AutoTokenizer.from_pretrained(
-        tok_path,
-        add_eos_token=False,
-        trust_remote_code=True,
-        use_fast=False,
-    )
+    def _load(path: str):
+        return AutoTokenizer.from_pretrained(
+            path,
+            add_eos_token=False,
+            trust_remote_code=True,
+            use_fast=False,
+        )
+
+    try:
+        tokenizer = _load(tok_path)
+    except Exception as exc:
+        # Some stage outputs may miss complete tokenizer assets; fall back to
+        # a known good tokenizer directory so training can continue.
+        fallback = _resolve_path(
+            os.environ.get("TOWER_TOKENIZER_FALLBACK", "configs/tokenizer/qwen3")
+        )
+        if fallback and fallback != tok_path and Path(fallback).is_dir():
+            from transformers.utils import logging
+
+            log = logging.get_logger(__name__)
+            log.warning(
+                "Tokenizer load failed at %s (%s). Falling back to %s",
+                tok_path,
+                exc,
+                fallback,
+            )
+            tokenizer = _load(fallback)
+        else:
+            raise
     tokenizer.model_max_length = cfg.max_seq_length
     tokenizer.add_tokens(ALL_SPECIAL_TOKEN_LIST, special_tokens=True)
     return tokenizer
