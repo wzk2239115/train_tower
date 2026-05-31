@@ -286,7 +286,9 @@ class SenseNovaTrainModel(nn.Module):
             noise_scale=noise_scale,
         )
         z = z.squeeze(0)
-        t_scalar = t.squeeze(0)
+        # sample_flow_batch may return t as scalar or [B]; normalize to 1-D
+        # so downstream slicing/expand logic is shape-safe.
+        t_scalar = t.reshape(-1)
 
         if grid_hw_raw is None:
             merge = int(1 / self.model.downsample_ratio)
