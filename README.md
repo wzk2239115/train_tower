@@ -182,12 +182,11 @@ Configs used by the script:
 | `stable` (default) | Safe default | 64 (8×8) | grad checkpointing on |
 | `turbo_safe` | Slight speedup | 72 (8×9) | |
 | `turbo` | More speed, watch VRAM | 80 (8×10) | grad checkpointing off on UW/Gen |
-| `max` | Higher **global** batch on 80GB (8×H800) | **160 (8×8×3)** | auto `vram_tune`: same peak VRAM as stable, more `grad_accum` |
+| `max` | Higher **global** batch on 80GB (8×H800) | **160 (8×8×3)** | fused SDPA for block-causal mask + `vram_tune` guard |
 
 ```bash
-# After Stage 0; auto-clamps micro-batch/pixels to stable envelope (eager attn cannot batch↑+pixels↑):
+# After Stage 0 (logs "Patched block-causal attention" on startup — fixes L×L eager OOM):
 H800_PROFILE=max ./scripts/h100_resume_pipeline.sh
-# Logs [vram_tune] if YAML requested more peak VRAM than stable.
 ```
 
 Optional overrides:

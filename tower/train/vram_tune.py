@@ -1,20 +1,13 @@
-"""H800 VRAM auto-tune: keep peak memory within the stable anchor envelope.
+"""H800 VRAM auto-tune (secondary guard; primary fix is fused SDPA in tower.unify.compat).
 
-Root cause (why ``max`` OOMs but ``stable`` runs)
--------------------------------------------------
-* UW / Gen PT use ``create_block_causal_mask`` → LLM attention is always **eager**.
-* Eager attention peak scales ~ ``batch × seq²``; ``seq`` grows with ``max_pixels`` (capped by
-  ``max_seq_length``).
-* ``gradient_accumulation_steps`` only raises **global** batch over time; each micro-step still
-  uses ``per_device_train_batch_size`` activations → **does not** reduce peak VRAM.
-* Old ``max`` raised **both** micro-batch (10 vs 8) **and** ``max_pixels`` (6M vs 4M) → ~1.7×
-  peak vs stable → OOM on 80GB.
+Essential OOM root cause (UW / Gen PT)
+--------------------------------------
+* ``data_flatten`` packs ``per_device_train_batch_size`` **samples into one sequence** (length → ``max_seq_length``).
+* ``create_block_causal_mask(L)`` + legacy **eager** attention materializes ``[B, H, L, L]`` fp32 weights (~3 GiB at L=8192 **per layer**).
+* ``gradient_accumulation_steps`` does **not** lower that peak (only increases global batch over time).
 
-Smart strategy
---------------
-* Never exceed the stable profile's peak-VRAM score (per stage).
-* Recover throughput via ``gradient_accumulation_steps`` (and optional ``TOWER_TARGET_GLOBAL_BATCH``).
-* Force ``gradient_checkpointing`` on eager-attn stages when tuning is active.
+This module caps pack-count / pixels / seq when ``TOWER_H800_VRAM_TUNE=1``. Throughput scaling should prefer
+``gradient_accumulation`` after compat SDPA patch is active.
 """
 
 from __future__ import annotations
@@ -29,7 +22,7 @@ from tower.train.config import TrainConfig
 
 logger = logging.get_logger(__name__)
 
-# Stable ``*_h800_resume.yaml`` anchors (known-good on 8×80GB).
+# Stable ``*_h800_resume.yaml`` anchors (known-good on 8×80GB with fused SDPA).
 _STAGE_ANCHORS: dict[str, dict[str, int | bool]] = {
     "understanding_warmup": {
         "per_device_train_batch_size": 8,
@@ -68,14 +61,12 @@ _STAGE_ANCHORS: dict[str, dict[str, int | bool]] = {
     },
 }
 
-# Exponent on pixel ratio: vision tokens grow sub-linearly with max_pixels cap.
 _PIXEL_EXP = 0.85
-# Exponent on seq cap: attention is quadratic in sequence length.
 _SEQ_EXP = 2.0
-# Activation savings with gradient checkpointing vs none (eager-attn LLM).
 _CKPT_FACTOR = 0.55
-# Flow tower hooks add overhead vs plain UW/Gen.
 _FLOW_TOWER_FACTOR = 1.25
+# Headroom below anchor (stable was already near limit on some nodes before SDPA patch).
+_MAX_SCORE = float(os.environ.get("TOWER_VRAM_MAX_SCORE", "0.95"))
 
 
 @dataclass(frozen=True)
@@ -101,15 +92,15 @@ def _get_anchor(stage: str) -> _Anchor | None:
 
 
 def peak_vram_score(cfg: TrainConfig, anchor: _Anchor) -> float:
-    """Relative peak VRAM estimate; 1.0 ≈ stable anchor on 8×80GB."""
-    batch_ratio = cfg.per_device_train_batch_size / max(anchor.per_device_train_batch_size, 1)
+    """Relative peak VRAM; 1.0 ≈ stable anchor (pack-count × pixels × seq²)."""
+    pack_ratio = cfg.per_device_train_batch_size / max(anchor.per_device_train_batch_size, 1)
     pixel_ratio = (cfg.max_pixels / max(anchor.max_pixels, 1)) ** _PIXEL_EXP
     seq_ratio = (cfg.max_seq_length / max(anchor.max_seq_length, 1)) ** _SEQ_EXP
     ckpt_ratio = _CKPT_FACTOR if cfg.gradient_checkpointing else 1.0
     ckpt_anchor = _CKPT_FACTOR if anchor.gradient_checkpointing else 1.0
     flow_ratio = _FLOW_TOWER_FACTOR if cfg.use_flow_tower else 1.0
     flow_anchor = _FLOW_TOWER_FACTOR if anchor.use_flow_tower else 1.0
-    return batch_ratio * pixel_ratio * seq_ratio * (ckpt_ratio / ckpt_anchor) * (flow_ratio / flow_anchor)
+    return pack_ratio * pixel_ratio * seq_ratio * (ckpt_ratio / ckpt_anchor) * (flow_ratio / flow_anchor)
 
 
 def _per_gpu_global_target(cfg: TrainConfig) -> int:
@@ -139,7 +130,7 @@ def _vram_tune_enabled() -> bool:
 
 
 def apply_h800_vram_tune(cfg: TrainConfig) -> TrainConfig:
-    """Clamp peak-VRAM knobs to ≤ stable; rebalance grad_accum for target global batch."""
+    """Clamp pack-count / pixels / seq; rebalance grad_accum for target global batch."""
     if not _vram_tune_enabled():
         return cfg
 
@@ -152,6 +143,7 @@ def apply_h800_vram_tune(cfg: TrainConfig) -> TrainConfig:
         tuned.per_device_train_batch_size,
         tuned.gradient_accumulation_steps,
         tuned.max_pixels,
+        tuned.max_seq_length,
         tuned.gradient_checkpointing,
     )
     target_per_gpu = _per_gpu_global_target(cfg)
@@ -160,12 +152,12 @@ def apply_h800_vram_tune(cfg: TrainConfig) -> TrainConfig:
     if _needs_eager_attn_guard(tuned) and not tuned.gradient_checkpointing:
         tuned.gradient_checkpointing = True
         logger.warning(
-            "[vram_tune] Forced gradient_checkpointing=true (%s uses block-causal eager attention)",
+            "[vram_tune] Forced gradient_checkpointing=true (%s)",
             tuned.stage,
         )
 
-    # Shrink peak-VRAM knobs until within stable envelope.
-    while peak_vram_score(tuned, anchor) > 1.0 + 1e-9:
+    limit = _MAX_SCORE
+    while peak_vram_score(tuned, anchor) > limit + 1e-9:
         if tuned.per_device_train_batch_size > anchor.per_device_train_batch_size:
             tuned.per_device_train_batch_size -= 1
         elif tuned.max_pixels > anchor.max_pixels:
@@ -181,25 +173,23 @@ def apply_h800_vram_tune(cfg: TrainConfig) -> TrainConfig:
     tuned.gradient_accumulation_steps = max(1, (target_per_gpu + micro - 1) // micro)
 
     after_score = peak_vram_score(tuned, anchor)
-    if (
-        before != (
-            tuned.per_device_train_batch_size,
-            tuned.gradient_accumulation_steps,
-            tuned.max_pixels,
-            tuned.gradient_checkpointing,
-        )
-        or initial_score > 1.0
-    ):
+    if before != (
+        tuned.per_device_train_batch_size,
+        tuned.gradient_accumulation_steps,
+        tuned.max_pixels,
+        tuned.max_seq_length,
+        tuned.gradient_checkpointing,
+    ) or initial_score > limit:
         world = int(os.environ.get("WORLD_SIZE", "8") or 8)
         global_batch = tuned.per_device_train_batch_size * tuned.gradient_accumulation_steps * world
         logger.warning(
-            "[vram_tune] stage=%s peak_vram_score %.2f → %.2f (anchor=1.00, stable envelope). "
-            "batch %s→%s accum %s→%s max_pixels %s→%s grad_ckpt %s→%s | "
-            "global_batch≈%s (target_per_gpu=%s). "
-            "Root cause: eager attn peak ~ batch×pixels^%.2f×seq^%.0f; accum does not lower peak.",
+            "[vram_tune] stage=%s score %.2f→%.2f (limit %.2f). "
+            "pack %s→%s accum %s→%s pixels %s→%s seq %s→%s | global≈%s. "
+            "Note: per_device_train_batch_size = flattened pack count; OOM fix is SDPA block attn in compat.",
             tuned.stage,
             initial_score,
             after_score,
+            limit,
             before[0],
             tuned.per_device_train_batch_size,
             before[1],
@@ -207,11 +197,10 @@ def apply_h800_vram_tune(cfg: TrainConfig) -> TrainConfig:
             before[2],
             tuned.max_pixels,
             before[3],
+            tuned.max_seq_length,
+            before[4],
             tuned.gradient_checkpointing,
             global_batch,
-            target_per_gpu,
-            _PIXEL_EXP,
-            _SEQ_EXP,
         )
 
     return tuned

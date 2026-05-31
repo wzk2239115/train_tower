@@ -40,11 +40,10 @@ def _apply_attn_implementation(model, impl: str) -> None:
 
     log = logging.get_logger(__name__)
     log.info("LLM attention implementation: %s", resolved)
-    if resolved != "eager":
-        log.warning(
-            "Masked training paths (create_block_causal_mask) always use eager "
-            "attention; flash/sdpa only applies when attention_mask is None"
-        )
+    log.info(
+        "Block-causal training uses fused SDPA when a mask is set (compat patch); "
+        "flash/sdpa hub path applies only when attention_mask is None"
+    )
 
 
 def _resolve_path(path: str | None) -> str | None:
