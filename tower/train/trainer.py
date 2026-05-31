@@ -122,6 +122,9 @@ def _run_dataloader_preflight(trainer: Trainer, steps: int) -> None:
     """Warm up dataloader and show fetch progress before training starts."""
     if steps <= 0:
         return
+    local_rank = int(os.environ.get("LOCAL_RANK", "0") or 0)
+    if local_rank != 0:
+        return
     dl = trainer.get_train_dataloader()
     if dl is None:
         return
@@ -178,6 +181,8 @@ def run_training(cfg: TrainConfig) -> None:
         "loss_reduction": cfg.loss_reduction,
     }
 
+    dl_workers = int(os.environ.get("TOWER_DATALOADER_NUM_WORKERS", str(cfg.dataloader_num_workers)) or 0)
+
     train_kwargs = {
         "output_dir": cfg.output_dir,
         "max_steps": cfg.max_steps,
@@ -194,7 +199,7 @@ def run_training(cfg: TrainConfig) -> None:
         "logging_steps": cfg.logging_steps,
         "save_steps": cfg.save_steps,
         "save_total_limit": cfg.save_total_limit,
-        "dataloader_num_workers": cfg.dataloader_num_workers,
+        "dataloader_num_workers": dl_workers,
         "gradient_checkpointing": cfg.gradient_checkpointing,
         "bf16": cfg.bf16,
         "remove_unused_columns": False,
@@ -206,6 +211,12 @@ def run_training(cfg: TrainConfig) -> None:
     ds = _resolve_deepspeed(cfg)
     if ds:
         train_kwargs["deepspeed"] = ds
+    if dl_workers != cfg.dataloader_num_workers:
+        logger.info(
+            "Override dataloader_num_workers: cfg=%s env=%s",
+            cfg.dataloader_num_workers,
+            dl_workers,
+        )
 
     parser = HfArgumentParser((DataArguments, TrainingArguments))
     data_args, training_args = parser.parse_dict({**data_kwargs, **train_kwargs})
