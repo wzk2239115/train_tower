@@ -273,18 +273,31 @@ _NATIVE_SDPA_BLOCK_ATTN = True
 _SDPA_BLOCK_ATTN_LOGGED = False
 
 
-def _sdpa_non_math_context():
-    """Prefer fused SDPA backends; never fall back to MATH (materializes L×L)."""
+def _sdpa_non_math_context(device: torch.device | None = None):
+    """Prefer fused SDPA backends on CUDA; CPU / non-CUDA tensors use default SDPA."""
+    if device is None or device.type != "cuda":
+        return contextlib.nullcontext()
+
+    backends_env = os.environ.get("TOWER_SDPA_BACKENDS", "efficient,cudnn").lower()
+    name_map = {
+        "efficient": "EFFICIENT_ATTENTION",
+        "mem_efficient": "EFFICIENT_ATTENTION",
+        "flash": "FLASH_ATTENTION",
+        "cudnn": "CUDNN_ATTENTION",
+    }
     try:
         from torch.nn.attention import SDPBackend, sdpa_kernel
 
-        return sdpa_kernel(
-            [
-                SDPBackend.EFFICIENT_ATTENTION,
-                SDPBackend.FLASH_ATTENTION,
-                SDPBackend.CUDNN_ATTENTION,
-            ]
-        )
+        selected = []
+        for part in backends_env.split(","):
+            key = part.strip()
+            if not key:
+                continue
+            attr = name_map.get(key)
+            if attr is not None:
+                selected.append(getattr(SDPBackend, attr))
+        if selected:
+            return sdpa_kernel(selected)
     except ImportError:
         pass
     if torch.cuda.is_available():
@@ -332,11 +345,12 @@ def sdpa_block_attention_forward(
     attn_mask = attention_mask
     if attn_mask is not None:
         attn_mask = attn_mask[:, :, :, : key_states.shape[-2]]
-        if attn_mask.dtype != query.dtype:
-            attn_mask = attn_mask.to(dtype=query.dtype)
+        # Fused SDPA expects fp32 additive masks; bf16 finfo.min can corrupt backward on H800.
+        if attn_mask.dtype != torch.float32:
+            attn_mask = attn_mask.to(dtype=torch.float32)
 
     dropout_p = float(dropout) if module.training else 0.0
-    with _sdpa_non_math_context():
+    with _sdpa_non_math_context(query.device):
         attn_output = F.scaled_dot_product_attention(
             query,
             key_states,

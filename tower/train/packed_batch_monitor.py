@@ -125,10 +125,8 @@ class TowerPackedBatchMonitorCallback(TrainerCallback):
         )
 
     def on_step_begin(self, args, state, control, **kwargs):
-        import torch
-
         if torch.cuda.is_available():
-            torch.cuda.reset_peak_memory_stats()
+            torch.cuda.reset_peak_memory_stats(torch.cuda.current_device())
 
     def on_step_end(self, args, state, control, **kwargs):
         if distributed_rank() != 0:
