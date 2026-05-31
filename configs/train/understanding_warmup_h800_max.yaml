@@ -1,6 +1,7 @@
-# understanding_warmup — maximize H800 throughput when VRAM ~25–35% on stable resume.
-# No flow tower: safe to raise batch vs world_pt. Target ~60–70% VRAM before OOM.
-# Global batch 160 (8×20×1). If OOM: batch 16; if still low: batch 24.
+# understanding_warmup — H800 80GB-safe "max" (NOT batch 20 / no-ckpt; that OOMs on eager attn).
+# Block-causal training always uses eager attention → activation memory dominates.
+# Global batch 160 = 8×10×2 (same effective batch as the old 8×20×1 recipe).
+# If still OOM: per_device_train_batch_size 8, or max_pixels 4194304 (stable).
 stage: understanding_warmup
 init_mode: checkpoint
 weight_init: random
@@ -13,14 +14,14 @@ loss_weights:
 max_steps: 200000
 output_dir: outputs/pretrain/uw_h800
 deepspeed: configs/deepspeed/zero2.json
-per_device_train_batch_size: 20
-gradient_accumulation_steps: 1
+per_device_train_batch_size: 10
+gradient_accumulation_steps: 2
 learning_rate: 2.0e-4
 warmup_steps: 500
 max_seq_length: 8192
-max_pixels: 8388608
+max_pixels: 6291456
 min_pixels: 65536
-gradient_checkpointing: false
+gradient_checkpointing: true
 bf16: true
 logging_steps: 10
 save_steps: 5000

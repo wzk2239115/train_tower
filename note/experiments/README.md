@@ -24,4 +24,4 @@
 | 4 unified_sft | `configs/train/unified_sft_h800_resume.yaml` | `outputs/pretrain/sft_h800` | 4,500 |
 
 Stage 0 完成后续跑：`./scripts/h100_resume_pipeline.sh`  
-显存占用很低（如 UW ~25%）时用：`H800_PROFILE=max ./scripts/h100_resume_pipeline.sh`
+比 stable 更快且能塞进 80GB 时用：`H800_PROFILE=max ./scripts/h100_resume_pipeline.sh`（8×10×2 + grad ckpt；旧版 8×20 会 OOM）
