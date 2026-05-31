@@ -13,18 +13,27 @@ h100_env_setup
 source "${ROOT}/scripts/train_env.sh"
 
 WORLD_CKPT="${WORLD_CKPT:-outputs/pretrain/world_pt_h800}"
-H800_PROFILE="${H800_PROFILE:-stable}"  # stable | turbo
-if [[ "${H800_PROFILE}" == "turbo" ]]; then
-  UW_CONFIG="${UW_CONFIG:-configs/train/understanding_warmup_h800_turbo.yaml}"
-  GEN_PT_CONFIG="${GEN_PT_CONFIG:-configs/train/generation_pt_h800_turbo.yaml}"
-  MT_CONFIG="${MT_CONFIG:-configs/train/unified_mt_h800_turbo.yaml}"
-  SFT_CONFIG="${SFT_CONFIG:-configs/train/unified_sft_h800_turbo.yaml}"
-else
-  UW_CONFIG="${UW_CONFIG:-configs/train/understanding_warmup_h800_resume.yaml}"
-  GEN_PT_CONFIG="${GEN_PT_CONFIG:-configs/train/generation_pt_h800_resume.yaml}"
-  MT_CONFIG="${MT_CONFIG:-configs/train/unified_mt_h800_resume.yaml}"
-  SFT_CONFIG="${SFT_CONFIG:-configs/train/unified_sft_h800_resume.yaml}"
-fi
+H800_PROFILE="${H800_PROFILE:-stable}"  # stable | turbo_safe | turbo
+case "${H800_PROFILE}" in
+  turbo)
+    UW_CONFIG="${UW_CONFIG:-configs/train/understanding_warmup_h800_turbo.yaml}"
+    GEN_PT_CONFIG="${GEN_PT_CONFIG:-configs/train/generation_pt_h800_turbo.yaml}"
+    MT_CONFIG="${MT_CONFIG:-configs/train/unified_mt_h800_turbo.yaml}"
+    SFT_CONFIG="${SFT_CONFIG:-configs/train/unified_sft_h800_turbo.yaml}"
+    ;;
+  turbo_safe)
+    UW_CONFIG="${UW_CONFIG:-configs/train/understanding_warmup_h800_turbo_safe.yaml}"
+    GEN_PT_CONFIG="${GEN_PT_CONFIG:-configs/train/generation_pt_h800_turbo_safe.yaml}"
+    MT_CONFIG="${MT_CONFIG:-configs/train/unified_mt_h800_turbo_safe.yaml}"
+    SFT_CONFIG="${SFT_CONFIG:-configs/train/unified_sft_h800_turbo_safe.yaml}"
+    ;;
+  *)
+    UW_CONFIG="${UW_CONFIG:-configs/train/understanding_warmup_h800_resume.yaml}"
+    GEN_PT_CONFIG="${GEN_PT_CONFIG:-configs/train/generation_pt_h800_resume.yaml}"
+    MT_CONFIG="${MT_CONFIG:-configs/train/unified_mt_h800_resume.yaml}"
+    SFT_CONFIG="${SFT_CONFIG:-configs/train/unified_sft_h800_resume.yaml}"
+    ;;
+esac
 
 run_stage() {
   local stage_name="$1"
