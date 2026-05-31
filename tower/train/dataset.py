@@ -9,6 +9,7 @@ import torch
 
 from tower.train.config import TrainConfig
 from tower.train.curriculum import CurriculumRuntime
+from tower.train.packed_batch_monitor import attach_packed_batch_stats
 from tower.train.tasks import flip_to_t2i, sample_task
 from tower.train.vision_batch import reconcile_vision_inputs
 from tower.io.audio import audio_file_to_patch_features
@@ -164,6 +165,11 @@ class UnifiedCollator:
                     if n > 0:
                         audio_mask[:n] = local_t[:n]
             batch["audio_token_mask"] = audio_mask
+
+        from neo.data.constants import IMG_CONTEXT_TOKEN
+
+        img_context_token_id = self.base_collator.tokenizer.convert_tokens_to_ids(IMG_CONTEXT_TOKEN)
+        attach_packed_batch_stats(batch, self.cfg, img_context_token_id)
         return batch
 
     def _reconcile_vision_batch(self, batch: dict[str, Any]) -> dict[str, Any]:

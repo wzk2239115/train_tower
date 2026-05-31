@@ -5,7 +5,6 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from tower.paths import ensure_train_paths
 
@@ -23,38 +22,25 @@ def sdpa_block_attention_forward(
     dropout: float = 0.0,
     **kwargs,
 ):
-    """Fused block-causal attention without materializing ``[B, H, L, L]`` weights.
-
-    SenseNova defaults to ``eager_attention_forward`` whenever a block mask is present.
-    That path allocates the full attention matrix in fp32 for softmax — ~3 GiB per layer
-    at L=8192 — which is the dominant OOM source on 80GB GPUs, independent of grad_accum.
-    """
-    from sensenova_u1.models.neo_unify.modeling_qwen3 import repeat_kv
-
-    key_states = repeat_kv(key, module.num_key_value_groups)
-    value_states = repeat_kv(value, module.num_key_value_groups)
-    attn_mask = attention_mask
-    if attn_mask is not None:
-        attn_mask = attn_mask[:, :, :, : key_states.shape[-2]]
-        if attn_mask.dtype != query.dtype:
-            attn_mask = attn_mask.to(dtype=query.dtype)
-
-    dropout_p = float(dropout) if module.training else 0.0
-    attn_output = F.scaled_dot_product_attention(
-        query,
-        key_states,
-        value_states,
-        attn_mask=attn_mask,
-        dropout_p=dropout_p,
-        scale=scaling,
-        is_causal=False,
+    """Re-export native SDPA path from modeling_qwen3 (compat fallback entry point)."""
+    from sensenova_u1.models.neo_unify.modeling_qwen3 import (
+        sdpa_block_attention_forward as _native_sdpa_block_attention_forward,
     )
-    attn_output = attn_output.transpose(1, 2).contiguous()
-    return attn_output, None
+
+    return _native_sdpa_block_attention_forward(
+        module,
+        query,
+        key,
+        value,
+        attention_mask,
+        scaling,
+        dropout=dropout,
+        **kwargs,
+    )
 
 
 def _patch_block_causal_attention() -> None:
-    """Route block-causal masks through fused SDPA instead of eager matmul+softmax."""
+    """Route block-causal masks through fused SDPA when third_party lacks native support."""
     global _SDPA_BLOCK_ATTN_PATCHED
     if _SDPA_BLOCK_ATTN_PATCHED or os.environ.get("TOWER_DISABLE_SDPA_BLOCK_ATTN", "0") == "1":
         return
@@ -63,6 +49,15 @@ def _patch_block_causal_attention() -> None:
     from transformers.utils import logging
 
     log = logging.get_logger(__name__)
+
+    if getattr(sn_qwen3, "_NATIVE_SDPA_BLOCK_ATTN", False):
+        _SDPA_BLOCK_ATTN_PATCHED = True
+        log.warning(
+            "Block-causal attention: native SDPA already in modeling_qwen3 "
+            "(compat monkey-patch skipped)"
+        )
+        return
+
     _orig = sn_qwen3.eager_attention_forward
 
     def _dispatch(module, query, key, value, attention_mask, scaling, dropout=0.0, **kwargs):

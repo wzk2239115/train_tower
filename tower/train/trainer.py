@@ -14,6 +14,7 @@ from tower.paths import ensure_train_paths
 from tower.train.config import TrainConfig
 from tower.train.curriculum import CurriculumCallback
 from tower.train.dataset import make_unified_data_module
+from tower.train.packed_batch_monitor import TowerPackedBatchMonitorCallback
 from tower.train.diagnostics import (
     TowerTrainDiagnosticsCallback,
     distributed_barrier,
@@ -61,6 +62,9 @@ class TowerTrainer(Trainer):
         return super().create_scheduler(num_training_steps, optimizer=optimizer)
 
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        stats = inputs.pop("_tower_batch_stats", None)
+        if stats is not None:
+            self._last_packed_batch_stats = stats
         if hasattr(model, "set_curriculum_step"):
             model.set_curriculum_step(self.state.global_step)
         if num_items_in_batch is None:
@@ -293,7 +297,7 @@ def run_training(cfg: TrainConfig) -> None:
         cfg=cfg,
     )
     curriculum_runtime = data_module.pop("curriculum_runtime")
-    callbacks = [TowerTrainDiagnosticsCallback()]
+    callbacks = [TowerTrainDiagnosticsCallback(), TowerPackedBatchMonitorCallback(cfg)]
     if cfg.curriculum:
         callbacks.append(
             CurriculumCallback(

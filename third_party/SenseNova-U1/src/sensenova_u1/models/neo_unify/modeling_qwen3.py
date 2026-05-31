@@ -1,11 +1,14 @@
 from typing import Callable, Optional, Union
 
-import torch
-import torch._dynamo
-from torch import nn
-
+import contextlib
 import copy
 import math
+import os
+
+import torch
+import torch._dynamo
+import torch.nn.functional as F
+from torch import nn
 from transformers.activations import ACT2FN
 from transformers.cache_utils import Cache, DynamicCache
 from transformers.generation import GenerationMixin
@@ -153,10 +156,10 @@ def _flash_or_sdpa(q, k, v, dropout_p: float = 0.0, softmax_scale=None, causal: 
     return _sdpa_attn_func(q, k, v, dropout_p=dropout_p, softmax_scale=softmax_scale, causal=causal)
 
 
-def create_block_causal_mask(index: torch.Tensor):
+def create_block_causal_mask(index: torch.Tensor, dtype: torch.dtype = torch.bfloat16):
     """
     index: (L)
-    return: (1, 1, L, L) block-wise causal attention mask
+    return: (1, 1, L, L) block-wise causal attention mask (bf16 additive mask by default)
     """
     L = index.size(0)
     idx_i = index.unsqueeze(1).expand(L, L)
@@ -165,7 +168,12 @@ def create_block_causal_mask(index: torch.Tensor):
     arange = torch.arange(L, device=index.device)
     mask = (idx_j == idx_i) | (arange.unsqueeze(0) <= arange.unsqueeze(1))
 
-    return torch.where(mask[None, None, :, :] > 0, torch.tensor(0.0), torch.tensor(float('-inf')))
+    finfo = torch.finfo(dtype)
+    return torch.where(
+        mask[None, None, :, :],
+        torch.zeros((), device=index.device, dtype=dtype),
+        torch.full((), finfo.min, device=index.device, dtype=dtype),
+    )
 
 
 def visualize_mask(mask: torch.Tensor, i: int = 0, j: int = 12):
@@ -259,6 +267,101 @@ def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
         return hidden_states
     hidden_states = hidden_states[:, :, None, :, :].expand(batch, num_key_value_heads, n_rep, slen, head_dim)
     return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen, head_dim)
+
+
+_NATIVE_SDPA_BLOCK_ATTN = True
+_SDPA_BLOCK_ATTN_LOGGED = False
+
+
+def _sdpa_non_math_context():
+    """Prefer fused SDPA backends; never fall back to MATH (materializes L×L)."""
+    try:
+        from torch.nn.attention import SDPBackend, sdpa_kernel
+
+        return sdpa_kernel(
+            [
+                SDPBackend.EFFICIENT_ATTENTION,
+                SDPBackend.FLASH_ATTENTION,
+                SDPBackend.CUDNN_ATTENTION,
+            ]
+        )
+    except ImportError:
+        pass
+    if torch.cuda.is_available():
+        try:
+            return torch.backends.cuda.sdp_kernel(
+                enable_flash=True,
+                enable_mem_efficient=True,
+                enable_math=False,
+            )
+        except Exception:
+            pass
+    return contextlib.nullcontext()
+
+
+def _log_block_causal_sdpa_once() -> None:
+    global _SDPA_BLOCK_ATTN_LOGGED
+    if _SDPA_BLOCK_ATTN_LOGGED:
+        return
+    _SDPA_BLOCK_ATTN_LOGGED = True
+    from transformers.utils import logging
+
+    log = logging.get_logger(__name__)
+    log.warning(
+        "Block-causal attention: native fused SDPA (EFFICIENT/FLASH/CUDNN; MATH disabled). "
+        "Set TOWER_DISABLE_SDPA_BLOCK_ATTN=1 to revert to eager L×L materialization."
+    )
+
+
+def sdpa_block_attention_forward(
+    module: nn.Module,
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    attention_mask: Optional[torch.Tensor],
+    scaling: float,
+    dropout: float = 0.0,
+    **kwargs: Unpack[TransformersKwargs],
+):
+    """Fused block-causal attention without materializing ``[B, H, L, L]`` weights."""
+    _log_block_causal_sdpa_once()
+
+    key_states = repeat_kv(key, module.num_key_value_groups)
+    value_states = repeat_kv(value, module.num_key_value_groups)
+
+    attn_mask = attention_mask
+    if attn_mask is not None:
+        attn_mask = attn_mask[:, :, :, : key_states.shape[-2]]
+        if attn_mask.dtype != query.dtype:
+            attn_mask = attn_mask.to(dtype=query.dtype)
+
+    dropout_p = float(dropout) if module.training else 0.0
+    with _sdpa_non_math_context():
+        attn_output = F.scaled_dot_product_attention(
+            query,
+            key_states,
+            value_states,
+            attn_mask=attn_mask,
+            dropout_p=dropout_p,
+            scale=scaling,
+            is_causal=False,
+        )
+    attn_output = attn_output.transpose(1, 2).contiguous()
+    return attn_output, None
+
+
+def resolve_attention_interface(
+    attention_mask: Optional[torch.Tensor],
+    attn_implementation: str,
+) -> Callable:
+    """Block mask → fused SDPA; otherwise transformers attention dispatch."""
+    if attention_mask is not None:
+        if os.environ.get("TOWER_DISABLE_SDPA_BLOCK_ATTN", "0") == "1":
+            return eager_attention_forward
+        return sdpa_block_attention_forward
+    if attn_implementation != "eager":
+        return ALL_ATTENTION_FUNCTIONS[attn_implementation]
+    return eager_attention_forward
 
 
 def eager_attention_forward(
@@ -478,10 +581,9 @@ class Qwen3Attention(nn.Module):
                     key_states   = torch.cat([past_k, key_states], dim=2)   # concat on seq_len
                     value_states = torch.cat([past_v, value_states], dim=2)
 
-        # Block-causal mask from create_block_causal_mask is only supported on eager.
-        attention_interface: Callable = eager_attention_forward
-        if attention_mask is None and self.config._attn_implementation != "eager":
-            attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
+        attention_interface = resolve_attention_interface(
+            attention_mask, self.config._attn_implementation
+        )
 
         attn_output, attn_weights = attention_interface(
             self,
@@ -719,10 +821,9 @@ class Qwen3Attention(nn.Module):
                     key_states = torch.cat([past_k, key_states], dim=2)
                     value_states = torch.cat([past_v, value_states], dim=2)
 
-        # Block-causal mask from create_block_causal_mask is only supported on eager.
-        attention_interface: Callable = eager_attention_forward
-        if attention_mask is None and self.config._attn_implementation != "eager":
-            attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
+        attention_interface = resolve_attention_interface(
+            attention_mask, self.config._attn_implementation
+        )
 
         attn_output, attn_weights = attention_interface(
             self,
@@ -827,10 +928,9 @@ class Qwen3Attention(nn.Module):
                     key_states   = torch.cat([past_k, key_states], dim=2)   # concat on seq_len
                     value_states = torch.cat([past_v, value_states], dim=2)
 
-        # Block-causal mask from create_block_causal_mask is only supported on eager.
-        attention_interface: Callable = eager_attention_forward
-        if attention_mask is None and self.config._attn_implementation != "eager":
-            attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
+        attention_interface = resolve_attention_interface(
+            attention_mask, self.config._attn_implementation
+        )
 
         attn_output, attn_weights = attention_interface(
             self,
