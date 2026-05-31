@@ -7,6 +7,7 @@ h100_env_setup() {
   export MASTER_PORT="${MASTER_PORT:-29500}"
   export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
   export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
+  export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
   # Prefer IPv4 in K8s/containers (avoids c10d "Address family not supported").
   export NCCL_SOCKET_FAMILY="${NCCL_SOCKET_FAMILY:-AF_INET}"
