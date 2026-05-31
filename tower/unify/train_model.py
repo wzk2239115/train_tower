@@ -286,9 +286,10 @@ class SenseNovaTrainModel(nn.Module):
             noise_scale=noise_scale,
         )
         z = z.squeeze(0)
-        # sample_flow_batch may return t as scalar or [B]; normalize to 1-D
-        # so downstream slicing/expand logic is shape-safe.
-        t_scalar = t.reshape(-1)
+        # sample_flow_batch may return scalar-like values in edge cases
+        # (e.g. aggressive truncation / empty-image samples). Normalize to a
+        # 1-D tensor on the training device to keep downstream logic robust.
+        t_scalar = torch.as_tensor(t, device=self.device, dtype=self.dtype).reshape(-1)
 
         if grid_hw_raw is None:
             merge = int(1 / self.model.downsample_ratio)
@@ -311,7 +312,10 @@ class SenseNovaTrainModel(nn.Module):
             hidden[0, selected][:n] = vit_noisy[:n]
 
         if n > 0:
-            t_value = float(t_scalar.mean().item()) if t_scalar.numel() else float(t_scalar.item())
+            if t_scalar.numel() > 0:
+                t_value = float(t_scalar.mean().item())
+            else:
+                t_value = float(getattr(model_cfg, "t_eps", 0.05))
             t_expanded = torch.full((n,), t_value, device=self.device, dtype=self.dtype)
             timestep_embeddings = self.model.fm_modules["timestep_embedder"](t_expanded)
             hidden[0, selected][:n] = hidden[0, selected][:n] + timestep_embeddings.to(hidden.dtype)
@@ -346,9 +350,12 @@ class SenseNovaTrainModel(nn.Module):
         x_pred = self.model.fm_modules["fm_head"](h)
         target = clean[:n]
         z_part = z[:n]
-        t_part = t_scalar[: min(n, t_scalar.shape[0])]
+        t_count = min(n, int(t_scalar.numel()))
+        t_part = t_scalar[:t_count]
         if t_part.numel() == 1 and n > 1:
             t_part = t_part.expand(n)
+        elif t_part.numel() == 0 and n > 0:
+            t_part = torch.full((n,), float(getattr(model_cfg, "t_eps", 0.05)), device=self.device, dtype=self.dtype)
         return rectified_flow_velocity_loss(
             x_pred, z_part, t_part, target, t_eps=float(getattr(model_cfg, "t_eps", 0.05))
         )
