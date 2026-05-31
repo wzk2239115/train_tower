@@ -66,7 +66,16 @@ _SEQ_EXP = 2.0
 _CKPT_FACTOR = 0.55
 _FLOW_TOWER_FACTOR = 1.25
 # Headroom below anchor (stable was already near limit on some nodes before SDPA patch).
-_MAX_SCORE = float(os.environ.get("TOWER_VRAM_MAX_SCORE", "0.95"))
+_DEFAULT_MAX_SCORE = {
+    "max": "0.95",
+    "extreme": "3.25",  # pack 10 + 6M px + grad_ckpt off (SDPA); score model assumes eager L×L
+}
+
+
+def _max_vram_score() -> float:
+    profile = os.environ.get("H800_PROFILE", "")
+    default = _DEFAULT_MAX_SCORE.get(profile, "0.95")
+    return float(os.environ.get("TOWER_VRAM_MAX_SCORE", default))
 
 
 @dataclass(frozen=True)
@@ -111,7 +120,19 @@ def _per_gpu_global_target(cfg: TrainConfig) -> int:
     return max(1, cfg.per_device_train_batch_size * cfg.gradient_accumulation_steps)
 
 
+def _sdpa_block_attn_expected() -> bool:
+    if os.environ.get("TOWER_DISABLE_SDPA_BLOCK_ATTN", "0") == "1":
+        return False
+    profile = os.environ.get("H800_PROFILE", "")
+    if profile in ("turbo", "extreme"):
+        return True
+    config_path = os.environ.get("CONFIG", "")
+    return "_h800_extreme" in config_path or "_h800_turbo" in config_path
+
+
 def _needs_eager_attn_guard(cfg: TrainConfig) -> bool:
+    if _sdpa_block_attn_expected():
+        return cfg.use_flow_tower
     if cfg.use_flow_tower:
         return True
     return cfg.stage in ("understanding_warmup", "generation_pt")
@@ -123,10 +144,11 @@ def _vram_tune_enabled() -> bool:
         return False
     if explicit == "1":
         return True
-    if os.environ.get("H800_PROFILE") == "max":
+    profile = os.environ.get("H800_PROFILE", "")
+    if profile in ("max", "extreme"):
         return True
     config_path = os.environ.get("CONFIG", "")
-    return "_h800_max" in config_path
+    return any(tag in config_path for tag in ("_h800_max", "_h800_extreme"))
 
 
 def apply_h800_vram_tune(cfg: TrainConfig) -> TrainConfig:
@@ -156,7 +178,7 @@ def apply_h800_vram_tune(cfg: TrainConfig) -> TrainConfig:
             tuned.stage,
         )
 
-    limit = _MAX_SCORE
+    limit = _max_vram_score()
     while peak_vram_score(tuned, anchor) > limit + 1e-9:
         if tuned.per_device_train_batch_size > anchor.per_device_train_batch_size:
             tuned.per_device_train_batch_size -= 1

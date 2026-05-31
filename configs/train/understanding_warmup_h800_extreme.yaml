@@ -1,0 +1,28 @@
+# understanding_warmup — "extreme" throughput on 8×80GB (requires fused SDPA patch).
+# Hand-tuned for SDPA: grad_ckpt off, pack 10, 6M px; global batch 160 = 8×10×2.
+# vram_tune uses elevated score limit (H800_PROFILE=extreme); OOM → fall back to turbo/max.
+stage: understanding_warmup
+init_mode: checkpoint
+weight_init: random
+model_name_or_path: outputs/pretrain/world_pt_h800
+tokenizer_name_or_path: outputs/pretrain/world_pt_h800
+datasets: "blip3o_long_pt,blip3o_short_pt"
+loss_weights:
+  ce: 1.0
+  fm: 0.0
+max_steps: 200000
+output_dir: outputs/pretrain/uw_h800
+deepspeed: configs/deepspeed/zero2.json
+per_device_train_batch_size: 10
+gradient_accumulation_steps: 2
+learning_rate: 2.0e-4
+warmup_steps: 500
+max_seq_length: 8192
+max_pixels: 6291456
+min_pixels: 65536
+gradient_checkpointing: false
+bf16: true
+logging_steps: 10
+save_steps: 5000
+save_total_limit: 2
+dataloader_num_workers: 16

@@ -96,7 +96,7 @@ def attach_packed_batch_stats(batch: dict[str, Any], cfg: TrainConfig, img_conte
 def _log_interval(global_step: int) -> bool:
     if os.environ.get("TOWER_PACKED_BATCH_LOG", "1") == "0":
         return False
-    every = int(os.environ.get("TOWER_PACKED_BATCH_LOG_EVERY", "1") or 1)
+    every = int(os.environ.get("TOWER_PACKED_BATCH_LOG_EVERY", "50") or 50)
     warmup = int(os.environ.get("TOWER_PACKED_BATCH_LOG_WARMUP", "20") or 20)
     if global_step < warmup:
         return True
@@ -140,14 +140,20 @@ class TowerPackedBatchMonitorCallback(TrainerCallback):
         if not stats:
             return
 
-        extra: dict[str, object] = dict(stats)
+        extra: dict[str, object] = {
+            "L": stats.get("packed_seq_length"),
+            "pack": stats.get("num_packed_samples"),
+            "imgs": stats.get("num_images"),
+            "vtok": stats.get("num_vision_tokens"),
+            "vram": f"{stats.get('peak_vram_score', 0):.2f}",
+        }
         import torch
 
         if torch.cuda.is_available():
             peak_gib = torch.cuda.max_memory_allocated() / (1024**3)
-            extra["cuda_peak_gib"] = f"{peak_gib:.2f}"
+            extra["cuda_gib"] = f"{peak_gib:.1f}"
 
         if stats.get("peak_vram_score", 0) > 1.0:
-            extra["WARN"] = "peak_vram_score>1.0"
+            extra["WARN"] = "vram>1"
 
-        log_training_phase(f"packed_batch step={step}", **extra)
+        log_training_phase(f"packed step={step}", **extra)

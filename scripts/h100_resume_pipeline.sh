@@ -13,8 +13,20 @@ h100_env_setup
 source "${ROOT}/scripts/train_env.sh"
 
 WORLD_CKPT="${WORLD_CKPT:-outputs/pretrain/world_pt_h800}"
-H800_PROFILE="${H800_PROFILE:-stable}"  # stable | turbo_safe | turbo | max
+H800_PROFILE="${H800_PROFILE:-stable}"  # stable | turbo_safe | turbo | max | extreme
 case "${H800_PROFILE}" in
+  extreme)
+    UW_CONFIG="${UW_CONFIG:-configs/train/understanding_warmup_h800_extreme.yaml}"
+    GEN_PT_CONFIG="${GEN_PT_CONFIG:-configs/train/generation_pt_h800_extreme.yaml}"
+    MT_CONFIG="${MT_CONFIG:-configs/train/unified_mt_h800_extreme.yaml}"
+    SFT_CONFIG="${SFT_CONFIG:-configs/train/unified_sft_h800_extreme.yaml}"
+    export TOWER_DATALOADER_NUM_WORKERS="${TOWER_DATALOADER_NUM_WORKERS:-16}"
+    export TOWER_H800_VRAM_TUNE="${TOWER_H800_VRAM_TUNE:-1}"
+    export H800_PROFILE=extreme
+    export TOWER_TARGET_GLOBAL_BATCH="${TOWER_TARGET_GLOBAL_BATCH:-160}"
+    export TOWER_PACKED_BATCH_LOG_EVERY="${TOWER_PACKED_BATCH_LOG_EVERY:-50}"
+    export TOWER_STEP_SUMMARY_EVERY="${TOWER_STEP_SUMMARY_EVERY:-100}"
+    ;;
   max)
     UW_CONFIG="${UW_CONFIG:-configs/train/understanding_warmup_h800_max.yaml}"
     GEN_PT_CONFIG="${GEN_PT_CONFIG:-configs/train/generation_pt_h800_max.yaml}"

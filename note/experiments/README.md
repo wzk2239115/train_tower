@@ -24,4 +24,5 @@
 | 4 unified_sft | `configs/train/unified_sft_h800_resume.yaml` | `outputs/pretrain/sft_h800` | 4,500 |
 
 Stage 0 完成后续跑：`./scripts/h100_resume_pipeline.sh`  
-比 stable 更快且能塞进 80GB 时用：`H800_PROFILE=max ./scripts/h100_resume_pipeline.sh`（8×10×2 + grad ckpt；旧版 8×20 会 OOM）
+SDPA patch 已确认、追求最高吞吐：`H800_PROFILE=extreme ./scripts/h100_resume_pipeline.sh`（8×10×2，UW/Gen 无 grad ckpt，global 160）  
+更保守的全局 batch：`H800_PROFILE=max ./scripts/h100_resume_pipeline.sh`（vram_tune 钳制 + grad_accum）

@@ -39,6 +39,11 @@ git rev-parse HEAD
 
 **跑 H800 续训前建议在算力平台确认**：
 
+```bash
+python scripts/h800_preflight_check.py
+python scripts/h800_preflight_check.py --run-benchmark   # optional eager vs SDPA VRAM check
+```
+
 1. 日志出现 `Block-causal attention: native fused SDPA`（`tower/unify/compat.py` 在训练启动时 monkey-patch；没有则说明未 `git pull` 到最新 commit）。
 2. `grep sdpa_block_attention_forward tower/unify/attention.py` 有命中（train_tower 侧 SDPA 实现；vendor `modeling_qwen3.py` 保持 upstream 干净）。
 3. `max` profile 时出现 `[vram_tune]`，且 `per_device_train_batch_size` / `max_pixels` 被压到与 `stable` 同量级（pack 条数 + 像素，不是单纯加大 micro-batch）。
@@ -50,12 +55,14 @@ git rev-parse HEAD
 
 | 变量 | 含义 |
 |------|------|
-| `TOWER_H800_VRAM_TUNE` | `1` 启用显存护栏（`H800_PROFILE=max` 时 pipeline 默认开） |
-| `TOWER_TARGET_GLOBAL_BATCH` | `max` 默认 `160`，用 grad_accum 凑全局 batch |
+| `TOWER_H800_VRAM_TUNE` | `1` 启用显存护栏（`H800_PROFILE=max|extreme` 时 pipeline 默认开） |
+| `TOWER_TARGET_GLOBAL_BATCH` | `max`/`extreme` 默认 `160`，用 grad_accum 凑全局 batch |
+| `TOWER_VRAM_MAX_SCORE` | `extreme` 默认 `3.25`（SDPA + 无 grad_ckpt）；`max` 默认 `0.95` |
 | `TOWER_DISABLE_SDPA_BLOCK_ATTN` | `1` 回退旧 eager（仅调试，易 OOM） |
 | `TOWER_DATALOADER_PREFLIGHT_STEPS` | 预取 batch 数；排查卡死可设 `0` |
-| `TOWER_PACKED_BATCH_LOG` | `1`（默认）每 step 打 packed 序列监控；`0` 关闭 |
-| `TOWER_PACKED_BATCH_LOG_EVERY` | 前 20 step 每步打；之后每 N step 打（默认 `1`） |
+| `TOWER_PACKED_BATCH_LOG` | `1`（默认）packed 序列监控；`0` 关闭 |
+| `TOWER_PACKED_BATCH_LOG_EVERY` | 前 20 step 每步；之后每 N step（默认 `50`；`extreme` pipeline 默认 50） |
+| `TOWER_STEP_SUMMARY_EVERY` | 简洁 step 摘要间隔（默认 `100`；异常 vram/loss 仍立即打） |
 
 ## H800 显存与 attention（2025-05 现状）
 
@@ -218,21 +225,29 @@ Configs used by the script:
 | `turbo_safe` | 略提速 | 72 (8×9) | |
 | `turbo` | 更快，注意显存 | 80 (8×10) | UW/Gen 关 grad ckpt，慎用 |
 | `max` | 80GB×8 提高全局 batch | **160 (8×8×3)** | 需 SDPA patch + `vram_tune`；YAML 里可写更大 pack，运行时会钳制 |
+| `extreme` | SDPA 已确认后的最高吞吐 | **160 (8×10×2)** | grad ckpt off (UW/Gen)、6M px、16 workers；轻量 vram_tune |
 
 ```bash
+# 上平台前预检（git / SDPA / GPU）:
+python scripts/h800_preflight_check.py
+python scripts/h800_preflight_check.py --run-benchmark
+
 # Stage 0 完成后（开发机 push → 算力平台 git pull 再执行）:
 chmod +x scripts/h100_resume_pipeline.sh
+H800_PROFILE=extreme ./scripts/h100_resume_pipeline.sh
+
+# 或 max（更保守的全局 batch 策略）:
 H800_PROFILE=max ./scripts/h100_resume_pipeline.sh
 
 # 短跑验证:
-TOWER_DATALOADER_PREFLIGHT_STEPS=0 H800_PROFILE=max MAX_STEPS=30 ./scripts/h100_resume_pipeline.sh
+TOWER_DATALOADER_PREFLIGHT_STEPS=0 H800_PROFILE=extreme MAX_STEPS=30 ./scripts/h100_resume_pipeline.sh
 ```
 
 Optional overrides:
 
 - `WORLD_CKPT` — Stage 0 checkpoint 路径。
 - `UW_CONFIG` / `GEN_PT_CONFIG` / `MT_CONFIG` / `SFT_CONFIG` — 单阶段 yaml。
-- `TOWER_DATALOADER_NUM_WORKERS` — stable 默认 8，max/turbo 默认 12。
+- `TOWER_DATALOADER_NUM_WORKERS` — stable 默认 8，max/turbo 默认 12，extreme 默认 16。
 - `DATASETS` / `MAX_STEPS` / `OUTPUT_DIR` — 传给 `tower.cli train`。
 - `TOWER_H800_VRAM_TUNE=0` — 关闭自动钳制（不推荐，除非已确认 SDPA patch 生效且要手调 yaml）。
 

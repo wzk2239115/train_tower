@@ -1,0 +1,31 @@
+# unified_mt — flow tower + long seq; extreme profile (grad_ckpt on for flow paths).
+stage: unified_mt
+init_mode: checkpoint
+model_name_or_path: outputs/pretrain/gen_pt_h800
+tokenizer_name_or_path: outputs/pretrain/gen_pt_h800
+datasets: "blip3o_long_mt,blip3o_short_mt,llava150k_mt,sharegpt4v_mt,refcoco_mt,textcaps_mt"
+use_flow_tower: true
+loss_weights:
+  ce: 1.0
+  fm: 0.3
+tower_decoder_prob: 0.2
+tower_self_cond_prob: 0.3
+tower_self_cond_cfg_min: 1.0
+tower_self_cond_cfg_max: 2.0
+cfg_label_drop_prob: 0.15
+max_steps: 50000
+output_dir: outputs/pretrain/mt_h800
+deepspeed: configs/deepspeed/zero2.json
+per_device_train_batch_size: 6
+gradient_accumulation_steps: 2
+learning_rate: 1.0e-4
+warmup_steps: 500
+max_seq_length: 16384
+max_pixels: 6291456
+min_pixels: 65536
+gradient_checkpointing: true
+bf16: true
+logging_steps: 10
+save_steps: 5000
+save_total_limit: 2
+dataloader_num_workers: 16

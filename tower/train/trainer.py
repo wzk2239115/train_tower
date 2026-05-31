@@ -15,9 +15,11 @@ from tower.train.curriculum import CurriculumCallback
 from tower.train.dataset import make_unified_data_module
 from tower.train.packed_batch_monitor import TowerPackedBatchMonitorCallback
 from tower.train.diagnostics import (
+    TowerStepSummaryCallback,
     TowerTrainDiagnosticsCallback,
     distributed_barrier,
     distributed_rank,
+    log_startup_summary,
     log_training_phase,
 )
 from tower.train.freeze import apply_stage_freeze, apply_tower_exit_freeze
@@ -193,6 +195,7 @@ def run_training(cfg: TrainConfig) -> None:
 
     cfg = apply_h800_vram_tune(cfg)
 
+    log_startup_summary(cfg)
     log_training_phase(
         "run_training start",
         stage=cfg.stage,
@@ -297,7 +300,11 @@ def run_training(cfg: TrainConfig) -> None:
         cfg=cfg,
     )
     curriculum_runtime = data_module.pop("curriculum_runtime")
-    callbacks = [TowerTrainDiagnosticsCallback(), TowerPackedBatchMonitorCallback(cfg)]
+    callbacks = [
+        TowerTrainDiagnosticsCallback(),
+        TowerPackedBatchMonitorCallback(cfg),
+        TowerStepSummaryCallback(cfg),
+    ]
     if cfg.curriculum:
         callbacks.append(
             CurriculumCallback(
