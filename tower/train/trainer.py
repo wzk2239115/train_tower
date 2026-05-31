@@ -22,6 +22,7 @@ from tower.train.diagnostics import (
 )
 from tower.train.freeze import apply_stage_freeze, apply_tower_exit_freeze
 from tower.train.registry import inject_data_dict
+from tower.train.vram_tune import apply_h800_vram_tune
 from tower.unify.build import build_model_and_tokenizer
 from tower.unify.export import export_multi_artifacts
 from tower.unify.flow_tower import FlowJepaTowerTrainModel
@@ -186,12 +187,18 @@ def run_training(cfg: TrainConfig) -> None:
 
     from neo.train.argument import DataArguments, TrainingArguments
 
+    cfg = apply_h800_vram_tune(cfg)
+
     log_training_phase(
         "run_training start",
         stage=cfg.stage,
         output_dir=cfg.output_dir,
         max_steps=cfg.max_steps,
         datasets=cfg.datasets,
+        batch=cfg.per_device_train_batch_size,
+        grad_accum=cfg.gradient_accumulation_steps,
+        max_pixels=cfg.max_pixels,
+        grad_ckpt=cfg.gradient_checkpointing,
     )
 
     os.makedirs(cfg.output_dir, exist_ok=True)

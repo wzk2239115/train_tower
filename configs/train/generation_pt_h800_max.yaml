@@ -1,5 +1,4 @@
-# generation_pt — H800 80GB-safe max (FM path + block-causal → eager attn, same VRAM rules as UW).
-# Global batch 160 = 8×10×2.
+# generation_pt — max throughput; see understanding_warmup_h800_max.yaml header.
 stage: generation_pt
 init_mode: checkpoint
 weight_init: random
@@ -18,12 +17,12 @@ cfg_label_drop_prob: 0.15
 max_steps: 100000
 output_dir: outputs/pretrain/gen_pt_h800
 deepspeed: configs/deepspeed/zero2.json
-per_device_train_batch_size: 10
+per_device_train_batch_size: 12
 gradient_accumulation_steps: 2
 learning_rate: 1.0e-4
 warmup_steps: 500
 max_seq_length: 8192
-max_pixels: 6291456
+max_pixels: 8388608
 min_pixels: 65536
 gradient_checkpointing: true
 bf16: true

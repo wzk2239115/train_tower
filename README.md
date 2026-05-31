@@ -182,11 +182,12 @@ Configs used by the script:
 | `stable` (default) | Safe default | 64 (8×8) | grad checkpointing on |
 | `turbo_safe` | Slight speedup | 72 (8×9) | |
 | `turbo` | More speed, watch VRAM | 80 (8×10) | grad checkpointing off on UW/Gen |
-| `max` | Higher throughput on 80GB (8×H800) | **160 (8×10×2)** | grad ckpt on, `max_pixels` 6M; eager attn needs ckpt |
+| `max` | Higher **global** batch on 80GB (8×H800) | **160 (8×8×3)** | auto `vram_tune`: same peak VRAM as stable, more `grad_accum` |
 
 ```bash
-# After Stage 0; faster than stable, must fit 80GB (do not use batch 20 + no ckpt):
+# After Stage 0; auto-clamps micro-batch/pixels to stable envelope (eager attn cannot batch↑+pixels↑):
 H800_PROFILE=max ./scripts/h100_resume_pipeline.sh
+# Logs [vram_tune] if YAML requested more peak VRAM than stable.
 ```
 
 Optional overrides:

@@ -21,6 +21,10 @@ case "${H800_PROFILE}" in
     MT_CONFIG="${MT_CONFIG:-configs/train/unified_mt_h800_max.yaml}"
     SFT_CONFIG="${SFT_CONFIG:-configs/train/unified_sft_h800_max.yaml}"
     export TOWER_DATALOADER_NUM_WORKERS="${TOWER_DATALOADER_NUM_WORKERS:-12}"
+    # Clamp peak VRAM to stable envelope; recover global batch via grad_accum (not larger micro-batch).
+    export TOWER_H800_VRAM_TUNE="${TOWER_H800_VRAM_TUNE:-1}"
+    export H800_PROFILE=max
+    export TOWER_TARGET_GLOBAL_BATCH="${TOWER_TARGET_GLOBAL_BATCH:-160}"
     ;;
   turbo)
     UW_CONFIG="${UW_CONFIG:-configs/train/understanding_warmup_h800_turbo.yaml}"
@@ -69,6 +73,7 @@ run_stage() {
   export TOWER_DATALOADER_PREFLIGHT_STEPS="${TOWER_DATALOADER_PREFLIGHT_STEPS:-20}"
   echo "[h100_resume_pipeline] dataloader_preflight_steps=${TOWER_DATALOADER_PREFLIGHT_STEPS}"
   echo "[h100_resume_pipeline] dataloader_workers=${TOWER_DATALOADER_NUM_WORKERS}"
+  [[ -n "${TOWER_H800_VRAM_TUNE:-}" ]] && echo "[h100_resume_pipeline] vram_tune=${TOWER_H800_VRAM_TUNE} target_global_batch=${TOWER_TARGET_GLOBAL_BATCH:-<cfg>}"
   [[ -n "${DATASETS:-}" ]] && echo "[h100_resume_pipeline] DATASETS=${DATASETS}"
   [[ -n "${MAX_STEPS:-}" ]] && echo "[h100_resume_pipeline] MAX_STEPS=${MAX_STEPS}"
   [[ -n "${OUTPUT_DIR:-}" ]] && echo "[h100_resume_pipeline] OUTPUT_DIR=${OUTPUT_DIR}"
