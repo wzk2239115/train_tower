@@ -32,6 +32,15 @@ tower:
   self_cond_cfg_min: 1.0
   self_cond_cfg_max: 2.0
   cfg_label_drop_prob: 0.15
+  cfg_audio_drop_prob: 0.1
+  cfg_video_drop_prob: 0.1
+  audio_cfg_scale: 1.5
+  video_cfg_scale: 1.5
+  grad_norm_balance: true
+  grad_norm_target: 1.0
+  grad_norm_update_interval: 100
+  max_audio_duration_ms: 5000
+  max_video_frames_gen: 16
 
 hyperparams:
   learning_rate: 1.0e-4
@@ -86,3 +95,43 @@ note: |
   - audio_elf 和 video_elf 各 0.2, 和 note/tower.yml 一致
   - understanding_elf 保持 1.0 作为主要 CE 梯度来源
   - generative_elf 降到 0.3, 因为 FM loss 已通过 tower exits 分流
+
+  AR + Flow Transfusion 课程：
+  - warmup 阶段 (0–5k): 短音频 3s, 短视频 8 帧, 低 CFG 1.0, 不做 grad norm balance
+  - main 阶段 (5k–35k): 标准长度, CFG 1.5, grad norm balance 开启
+  - refine 阶段 (35k–50k): 长音频 10s, 更多视频帧 24, CFG 2.0
+
+curriculum:
+  - stage: mt_warmup
+    until_step: 5000
+    max_audio_duration_ms: 3000
+    max_video_frames_gen: 8
+    audio_cfg_scale: 1.0
+    video_cfg_scale: 1.0
+    grad_norm_balance: false
+    tower_decoder_prob: 0.1
+    cfg_label_drop_prob: 0.1
+  - stage: mt_main
+    until_step: 35000
+    max_audio_duration_ms: 5000
+    max_video_frames_gen: 16
+    audio_cfg_scale: 1.5
+    video_cfg_scale: 1.5
+    grad_norm_balance: true
+    grad_norm_update_interval: 100
+    tower_decoder_prob: 0.2
+    cfg_label_drop_prob: 0.15
+    cfg_audio_drop_prob: 0.1
+    cfg_video_drop_prob: 0.1
+  - stage: mt_refine
+    until_step: 50000
+    max_audio_duration_ms: 10000
+    max_video_frames_gen: 24
+    audio_cfg_scale: 2.0
+    video_cfg_scale: 2.0
+    grad_norm_balance: true
+    grad_norm_update_interval: 50
+    tower_decoder_prob: 0.3
+    cfg_label_drop_prob: 0.2
+    cfg_audio_drop_prob: 0.15
+    cfg_video_drop_prob: 0.15

@@ -74,7 +74,14 @@ class CurriculumRuntime:
         self.cfg.task_override = settings.get("task_override")
         for key in CURRICULUM_TRAIN_OVERRIDE_KEYS:
             if key in settings:
-                setattr(self.cfg, key, float(settings[key]))
+                val = settings[key]
+                field_type = TrainConfig.__dataclass_fields__.get(key)
+                if field_type is not None and field_type.type in ("bool", bool):
+                    setattr(self.cfg, key, bool(val))
+                elif field_type is not None and field_type.type in ("int", int):
+                    setattr(self.cfg, key, int(val))
+                else:
+                    setattr(self.cfg, key, float(val))
 
         prev_stage = prev.get("stage") if prev else None
         new_stage = settings["stage"]

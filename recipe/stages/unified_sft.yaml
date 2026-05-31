@@ -44,6 +44,15 @@ tower:
   self_cond_cfg_min: 1.0
   self_cond_cfg_max: 1.5
   cfg_label_drop_prob: 0.10
+  cfg_audio_drop_prob: 0.08
+  cfg_video_drop_prob: 0.08
+  audio_cfg_scale: 1.5
+  video_cfg_scale: 1.5
+  grad_norm_balance: true
+  grad_norm_target: 1.0
+  grad_norm_update_interval: 50
+  max_audio_duration_ms: 5000
+  max_video_frames_gen: 16
 
 hyperparams:
   learning_rate: 1.2e-4
@@ -96,3 +105,33 @@ note: |
   7. max_steps 降到 20000：高质量数据不需要太多步
   
   这是最后一个训练阶段, 输出即可用于 Super-Omni 推理.
+
+curriculum:
+  - stage: sft_warmup
+    until_step: 2000
+    max_audio_duration_ms: 5000
+    max_video_frames_gen: 16
+    audio_cfg_scale: 1.0
+    video_cfg_scale: 1.0
+    grad_norm_balance: false
+    tower_decoder_prob: 0.2
+  - stage: sft_main
+    until_step: 15000
+    max_audio_duration_ms: 8000
+    max_video_frames_gen: 24
+    audio_cfg_scale: 1.5
+    video_cfg_scale: 1.5
+    grad_norm_balance: true
+    tower_decoder_prob: 0.3
+    cfg_label_drop_prob: 0.10
+    cfg_audio_drop_prob: 0.08
+    cfg_video_drop_prob: 0.08
+  - stage: sft_refine
+    until_step: 20000
+    max_audio_duration_ms: 12000
+    max_video_frames_gen: 32
+    audio_cfg_scale: 2.0
+    video_cfg_scale: 2.0
+    grad_norm_balance: true
+    grad_norm_update_interval: 30
+    tower_decoder_prob: 0.4

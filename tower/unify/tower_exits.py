@@ -1,9 +1,10 @@
-"""Flow Tower exit modules — JEPA + stacked ELF heads at each floor."""
+"""Flow Tower exit modules — JEPA + ELF flow + CE heads at each tower floor."""
 
 from __future__ import annotations
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from tower.train.losses import rectified_flow_velocity_loss
 
@@ -166,3 +167,25 @@ class JepaTowerExit(nn.Module):
         with torch.no_grad():
             target = self.target_projector(tgt[pm]).detach()
         return torch.mean((pred - target) ** 2)
+
+
+class CeTowerExit(nn.Module):
+    """Cross-entropy exit for supervised text tokens at a tower layer.
+
+    Used by understanding_elf so that text tokens are trained with AR
+    next-token CE loss instead of flow matching.
+    """
+
+    def __init__(self, hidden_size: int, vocab_size: int) -> None:
+        super().__init__()
+        self.head = nn.Linear(hidden_size, vocab_size, bias=False)
+
+    def forward(
+        self,
+        hidden: torch.Tensor,
+        labels: torch.Tensor,
+    ) -> torch.Tensor:
+        if hidden.numel() == 0:
+            return hidden.sum() * 0.0
+        logits = self.head(hidden)
+        return F.cross_entropy(logits, labels, ignore_index=-100)

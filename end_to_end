@@ -1,20 +1,21 @@
 # Super-Omni 端到端训练：当前状态与差距分析
+# Updated: AR + Flow Transfusion paradigm alignment complete
 
 ## 总览
 
 | 模态 | 模型侧 | 数据侧 | 训练配置 | 能否训练 |
 |------|--------|--------|----------|----------|
-| 文本 | ✅ | ✅ | ✅ | ✅ |
-| 图像 | ✅ | ✅ | ✅ | ✅ |
-| 音频输入 | ✅ | ✅ 已修复 | ❌ 无数据集 | ⚠️ 缺数据 |
-| 视频输入 | ✅ | ✅ 已修复 | ❌ 无数据集 | ⚠️ 缺数据 |
-| 音频生成 | ✅ (推理侧) | ✅ 已修复 | ❌ 无数据集 | ⚠️ 缺数据 |
-| 视频生成 | ✅ (推理侧) | ✅ 已修复 | ❌ 无数据集 | ⚠️ 缺数据 |
-| 交织生成 | ✅ super_omni_gen | ❌ 无交织数据 | ❌ | ❌ |
+| 文本 (CE) | ✅ CeTowerExit | ✅ | ✅ | ✅ |
+| 图像 (FM) | ✅ | ✅ | ✅ | ✅ |
+| 音频理解 | ✅ audio_und_proj | ✅ 已修复 | ✅ recipe/pools | ⚠️ 缺数据 |
+| 音频生成 (FM) | ✅ audio_gen_proj + audio_patch | ✅ 已修复 | ✅ recipe/pools | ⚠️ 缺数据 |
+| 视频理解 | ✅ video_und_proj | ✅ 已修复 | ✅ recipe/pools | ⚠️ 缺数据 |
+| 视频生成 (FM) | ✅ video_gen_proj + video_patch | ✅ 已修复 | ✅ recipe/pools | ⚠️ 缺数据 |
+| 交织生成 | ✅ super_omni_gen | ⚠️ recipe/synthesis 文档 | ✅ | ⚠️ 缺合成数据 |
 
 ## 已完成的工作
 
-### 1. 模型架构（全部就绪）
+### 1. 模型架构 — AR + Flow Transfusion paradigm
 
 - **NEOChatModel** (`tower/models/neo_unify/modeling_neo_chat.py`)
   - `__init__` 新增 `AudioMelDecoder`, `AudioPatchEncoder`, `VideoFrameDecoder`
@@ -22,140 +23,107 @@
   - `audio_mel_decoder`: mel → waveform vocoder（推理用）
   - `video_frame_decoder`: latent patches → 视频帧
   - 所有 6 个特殊 token ID 注册：`<AUDIO_CONTEXT>`, `<audio>`, `</audio>`, `<VIDEO_CONTEXT>`, `<video>`, `</video>`
+  - **[NEW]** 音频时间位置编码：t 轴递增（按频率组递增），h 轴循环（0..n_freq-1）
+  - **[NEW]** latent_proj 预计算：去噪循环中用 F.linear 替代每步创建 nn.Linear
 
 - **FlowJepaTowerTrainModel** (`tower/unify/flow_tower.py`)
-  - `audio_proj` (80→768): 音频特征投影到 LLM hidden space
-  - `video_proj` (1024→768): 视频特征投影到 LLM hidden space
-  - `_audio_token_mask()` / `_video_token_mask()`: 从 batch 或 input_ids 获取模态 mask
-  - `_extract_audio_clean()` / `_extract_video_clean()`: 投影并返回 clean target
-  - `_inject_audio()` / `_inject_video()`: 将模态 embedding 注入 hidden states
-  - `_prepare_tower_batch()`: 已处理 audio/video FM 采样（z_audio, t_audio, z_video, t_video）
-  - `_compute_exit_loss()`: audio_embed / video_embed latent 走 ELF-FM 路径
-  - `_tower_forward()`: und/gen 双路径均包含 audio/video
+  - **[NEW]** Janus-style decoupled projectors:
+    - `audio_und_proj` (80→768): 音频理解路径
+    - `audio_gen_proj` (80→768): 音频生成路径
+    - `video_und_proj` (1024→768): 视频理解路径
+    - `video_gen_proj` (1024→768): 视频生成路径
+  - `_build_tower_exits()`: 支持 `ce` exit type + `audio_patch`/`video_patch` out_dim 路由
+  - `_extract_audio_clean()` / `_extract_video_clean()`: 接受 `gen_mode` 参数选择 und/gen projector
+  - **[NEW]** `_extract_raw_audio()` / `_extract_raw_video()`: 返回 patch-level targets (dim=80/1024)
+  - `_latent_bundle()`: 支持 `audio_patch`/`video_patch` latent 类型（原始 patch 空间）
+  - `_compute_exit_loss()`: 支持 `ce` exit type via CeTowerExit
+  - `_tower_forward()`: CE exits 走 und 路径；FM exits 走 gen 路径；消除 audio/video 双重计数
+  - `noise_scale` 条件扩展到 audio/video patches
+  - `_prepare_text_batch()` / `_prepare_tower_batch()`: 返回 dict 中包含 `labels`
 
 - **Tower 出口定义** (`note/tower.yml`)
-  - `audio_elf` @ Layer 11, latent=audio_embed, elf_fm
-  - `video_elf` @ Layer 13, latent=video_embed, elf_fm
+  - `understanding_elf` @ Layer 21, type=**ce** (文本 CE loss)
+  - `audio_elf` @ Layer 11, latent=**audio_patch**, elf_fm
+  - `video_elf` @ Layer 13, latent=**video_patch**, elf_fm
   - 权重: unified_mt 0.2, unified_sft 0.15
 
 - **Tower 出口模块** (`tower/unify/tower_exits.py`)
-  - `ElfFlowTowerExit`: 通用 rectified flow head，对模态无关
+  - `ElfFlowTowerExit`: 通用 rectified flow head
+  - **[NEW]** `CeTowerExit`: CE loss for text tokens at tower exit layer
 
-### 2. 推理生成（全部就绪）
+### 2. Qwen3 MoT Bug Fix
 
-- **`super_omni_gen()`** (`modeling_neo_chat.py`)
-  - 统一交织生成循环：AR text → 遇到 `<img>`/`<audio>`/`<video>` → FM denoising → 注入 KV cache → 继续 AR
-  - `_denoise_audio()`: mel-patch latent space rectified flow
-  - `_denoise_video()`: per-frame pixel patch rectified flow
-  - `_t2a_predict_v()` / `_t2v_predict_v()`: 音频/视频 velocity prediction
-  - `_append_modality_to_cache()`: 通用模态 token 注入 KV cache
-  - 返回 `{"text": ..., "images": [...], "audios": [...], "videos": [...]}`
+- **modeling_qwen3.py** L775, L790: `query_states_h` → `query_states_hw`
+  - 影响：MoT dual-path attention 中 hw 分支的 query 之前用了错误的变量
+  - 严重度：P0 (训练结果错误)
 
-### 3. 训练配置
+### 3. 训练配置 — AR + Flow Transfusion curriculum
 
-- `TrainConfig` 已有全部字段：audio_n_mels, audio_patch_t, audio_sample_rate, audio_hop_size
-- `config.json` 已配置 audio/video 参数
+- **TrainConfig** (`tower/train/config.py`)
+  - **[NEW]** 字段: `cfg_audio_drop_prob`, `cfg_video_drop_prob`, `audio_cfg_scale`, `video_cfg_scale`
+  - **[NEW]** 字段: `grad_norm_balance`, `grad_norm_target`, `grad_norm_update_interval`
+  - **[NEW]** 字段: `max_audio_duration_ms`, `max_video_frames_gen`
+  - `CURRICULUM_TRAIN_OVERRIDE_KEYS` 扩展了所有新字段
 
-### 4. Token 注册
+- **CurriculumRuntime** (`tower/train/curriculum.py`)
+  - **[NEW]** 类型感知 sync：根据 dataclass field type 自动 int/float/bool 转换
 
-- `constants.py`: 6 个新 special token 已注册
-- `build_tokenizer()`: tokenizer 自动扩展词表
-- `build.py`: 从 tokenizer 获取 token ID 并设置到模型
+- **Stage YAML curriculum** (`recipe/stages/`)
+  - `unified_mt.yaml`: 3 阶段课程 (mt_warmup → mt_main → mt_refine)
+    - warmup: 短音频 3s, 短视频 8 帧, CFG 1.0
+    - main: 标准长度, CFG 1.5, grad norm balance
+    - refine: 长音频 10s, 24 帧, CFG 2.0
+  - `unified_sft.yaml`: 3 阶段课程 (sft_warmup → sft_main → sft_refine)
+    - warmup: 标准, CFG 1.0
+    - main: 8s 音频, 24 帧, CFG 1.5
+    - refine: 12s 音频, 32 帧, CFG 2.0
 
----
+### 4. 数据 Recipe
 
-## 关键缺口（阻止端到端训练）
+- `recipe/` 目录（34 文件）: 9 pool YAMLs (64 datasets), 5 stage YAMLs, 3 scale YAMLs
+- `data_registry.py`: auto-registers 64 datasets, resolves pool_mix, applies scale multipliers
+- `recipe/synthesis/`: 交织数据合成 pipeline 文档
 
-### 缺口 1（CRITICAL）: ~~Tokenization 不展开 `<audio>`/`<video>`~~ ✅ 已修复
+### 5. P0 数据管线修复 (earlier session)
 
-**文件**: `tower/neo/data/utils.py` → `tokenize_mm_chat_conversations()`
-
-**修复**: 添加了 `num_audio_token_list` 和 `num_video_token_list` 参数，在 image 展开循环后增加了 audio/video 展开逻辑，将 `<audio>` → `<audio><AUDIO_CONTEXT * N></audio>`，`<video>` → `<video><VIDEO_CONTEXT * N></video>`
-
-### 缺口 2（CRITICAL）: ~~数据加载器不处理 audio/video~~ ✅ 已修复
-
-**文件**: `tower/neo/data/data_processor.py` → `_get_item()`
-
-**修复**: 
-- 在 `_get_item()` 中添加了 audio/video 路径解析（支持 `"audio"`/`"audios"`/`"video"`/`"videos"` 字段）
-- 音频文件通过 `audio_file_to_patch_features()` 加载，自动计算 token 数量
-- 视频使用 `num_frames * 256` 作为默认 token 数
-- 自动注入 `<audio>`/`<video>` 标签到首个 human turn（与 image 逻辑对称）
-- 生成 `audio_token_mask` 和 `video_token_mask` 供 collator 使用
-
-**额外修复**: `DataArguments` 添加了 `audio_n_mels`, `audio_patch_bins`, `audio_patch_frames`, `audio_max_patches`, `video_num_frames`, `video_patch_dim` 字段
-
-### 缺口 3（HIGH）: 无 audio/video 训练数据集
-
-**文件**: `configs/train/*.yaml`, `tower/neo/data/__init__.py`
-
-**现状**: 所有配置只引用 image+text 数据集
-**缺失**: 无 audio captioning / video captioning / interleaved multimodal 数据集
-
-**修复**:
-1. 准备 audio/video 训练数据（JSONL 格式，含 audio_path, video_path, audio_values 等字段）
-2. 注册到 data_dict 或 manifest.json
-3. 在 unified_mt.yaml / unified_sft.yaml 中引用
-
-### 缺口 4（LOW）: JEPA 出口不支持 audio/video latent
-
-**文件**: `tower/unify/flow_tower.py` → `_compute_exit_loss()` JEPA 分支
-
-**现状**: JEPA 只支持 vision_embed_und / vision_embed
-**影响**: 当前 tower.yml 中 audio/video 用 elf_fm 类型，不影响训练
-**未来**: 如果需要 JEPA 音频/视频出口，需扩展
+- `tokenize_mm_chat_conversations()`: 展开 `<audio>`/`<video>` tokens
+- `_get_item()`: audio/video 文件加载, 模态 mask 生成
+- `DataArguments`: audio/video 配置字段
 
 ---
 
-## 修复优先级
+## 关键缺口
+
+### 缺口 1（HIGH）: 训练数据不存在
+
+**现状**: JSONL 文件在 $DATA_ROOT 路径下不存在
+**影响**: 所有 64 个数据集只有格式定义，无实际文件
+**修复**: 需外部准备数据 + 运行 recipe/synthesis/ pipeline 合成交织数据
+
+### 缺口 2（MEDIUM）: data_registry 未集成到训练管线
+
+**现状**: `recipe/data_registry.py` 可独立运行，但 `tower/neo/data/__init__.py` 未调用
+**修复**: 修改 data loading pipeline 使用 `build_data_dict()` 替代硬编码 data_dict
+
+### 缺口 3（LOW）: recipe/stages 未集成到训练启动
+
+**现状**: `tower/train/config.py` 的 TrainConfig 仍从 `configs/train/*.yaml` 加载
+**修复**: 添加从 `recipe/stages/*.yaml` 加载的入口
+
+---
+
+## AR + Flow Transfusion 范式总结
 
 ```
-P0 (必做): 缺口 1 + 缺口 2 → ✅ 已修复
-           改了 3 个文件：utils.py, data_processor.py, argument.py
-           audio/video tokenization + data loading 管线贯通
-
-P1 (必做): 缺口 3 → 训练数据
-           需外部准备音频/视频数据集
-           在 configs 中引用
-
-P2 (可选): 缺口 4
-           当前不需要
+Text tokens  → AR (CE loss) via CeTowerExit @ L21 (understanding path)
+Image spans  → FM (velocity MSE) via ElfFlowTowerExit @ L25 (generation path)
+Audio spans  → FM (velocity MSE) via ElfFlowTowerExit @ L11 (generation path, audio_patch space)
+Video spans  → FM (velocity MSE) via ElfFlowTowerExit @ L13 (generation path, video_patch space)
 ```
 
-## 架构优势
-
-修复 P0 + P1 后即可端到端训练，且架构上有以下优势：
-
-1. **统一 flow matching 范式**: 所有模态（image/audio/video/text）的生成 loss 都是 rectified flow velocity MSE，只是 latent space 不同
-2. **MoT 双路径**: und/gen 分裂 FFN 使理解和生成在同一序列中共存
-3. **Tower 多出口**: 不同深度的出口天然匹配不同模态的表征需求（audio 浅层 L11, video L13, image 深层 L25）
-4. **3D 位置编码**: (t, h, w) 天然支持视频帧的时空位置
-5. **推理闭环**: super_omni_gen() 已实现完整的交织生成循环
-
-## 数据格式要求
-
-训练数据 JSONL 样例（audio+video+image+text 交织）：
-
-```json
-{
-  "conversations": [
-    {"from": "human", "value": "请看这张图 <image>，听这段声音 <audio>，然后看视频 <video>，描述你的感受"},
-    {"from": "gpt", "value": "图中是一片海洋，音频是海浪声，视频展现了日出。这让我感到宁静。"}
-  ],
-  "image": "path/to/ocean.jpg",
-  "audio": "path/to/waves.wav",
-  "video": "path/to/sunrise.mp4"
-}
-```
-
-最小可行 audio-only 数据：
-
-```json
-{
-  "conversations": [
-    {"from": "human", "value": "描述这段音频 <audio>"},
-    {"from": "gpt", "value": "这是一段钢琴演奏的古典音乐"}
-  ],
-  "audio": "path/to/piano.wav"
-}
-```
+关键设计决策：
+- **Janus decoupling**: und_proj / gen_proj 防止理解与生成互相干扰
+- **Patch-level FM**: audio_patch (dim=80) / video_patch (dim=1024) 在原始 patch 空间做 FM，不是 hidden space
+- **Text CE at tower exit**: 文本 CE loss 在 tower L21 exit 而非全局 head，允许中间层文本监督
+- **Progressive curriculum**: warmup → main → refine，逐步增加音频/视频长度和 CFG 强度
+- **GradNorm balance**: per-loss gradient norm 平衡，防止模态间梯度冲突

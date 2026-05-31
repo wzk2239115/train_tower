@@ -1,6 +1,9 @@
 from typing import List, Optional, Tuple, Union
 import math
 import os
+
+import torch
+import torch.nn.functional as F
 import torch.utils.checkpoint
 from torch import nn
 import transformers
@@ -2090,17 +2093,24 @@ class NEOChatModel(PreTrainedModel):
         T_p = T_mel // audio_patch_t
         audio_token_num = T_p
 
-        t_audio = torch.full((audio_token_num,), t_index_cond + 1, dtype=torch.long, device=device)
-        h_audio = torch.zeros(audio_token_num, dtype=torch.long, device=device)
+        n_freq = audio_n_mels // 10
+        t_audio = torch.arange(audio_token_num, dtype=torch.long, device=device)
+        t_audio = t_audio_cond + 1 + t_audio // n_freq
+        h_audio = torch.arange(audio_token_num, dtype=torch.long, device=device)
+        h_audio = h_audio % n_freq
         w_audio = torch.zeros(audio_token_num, dtype=torch.long, device=device)
         indexes_audio_cond = torch.stack([t_audio, h_audio, w_audio], dim=0)
 
-        t_audio_tu = torch.full((audio_token_num,), t_index_tu + 1, dtype=torch.long, device=device)
+        t_audio_tu = torch.arange(audio_token_num, dtype=torch.long, device=device)
+        t_audio_tu = t_index_tu + 1 + t_audio_tu // n_freq
         indexes_audio_tu = torch.stack([t_audio_tu, h_audio, w_audio], dim=0)
 
         patch_dim = audio_n_mels * audio_patch_t
         generator = torch.Generator(device).manual_seed(seed) if generator is None else generator
         z_patches = torch.randn(1, audio_token_num, patch_dim, device=device, dtype=torch.bfloat16, generator=generator)
+
+        proj_weight = self.audio_latent_proj[0].weight.data[:, :patch_dim]
+        proj_bias = self.audio_latent_proj[0].bias.data
 
         timesteps = torch.linspace(0.0, 1.0, num_steps + 1, device=device)
 
@@ -2111,14 +2121,8 @@ class NEOChatModel(PreTrainedModel):
             t_expanded = t.expand(audio_token_num)
             ts_emb = self.fm_modules["timestep_embedder"](t_expanded).view(1, audio_token_num, -1)
 
-            latent_proj = nn.Sequential(
-                nn.Linear(patch_dim, self.config.llm_config.hidden_size, bias=False),
-            ).to(device=device, dtype=torch.bfloat16)
-            proj_weight = self.audio_latent_proj[0].weight.data[:, :patch_dim]
-            latent_proj[0].weight.data.copy_(proj_weight)
-            latent_proj[0].bias.data.copy_(self.audio_latent_proj[0].bias.data)
-
-            embeds = latent_proj(z_patches.view(audio_token_num, -1)).view(1, audio_token_num, -1)
+            flat = z_patches.view(audio_token_num, -1)
+            embeds = F.linear(flat, proj_weight, proj_bias).view(1, audio_token_num, -1)
             embeds = embeds + ts_emb
 
             attn_mask = {"full_attention": None}

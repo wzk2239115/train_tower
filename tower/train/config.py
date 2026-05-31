@@ -21,9 +21,18 @@ CURRICULUM_OVERRIDE_KEYS = (
 CURRICULUM_TRAIN_OVERRIDE_KEYS = (
     "tower_decoder_prob",
     "cfg_label_drop_prob",
+    "cfg_audio_drop_prob",
+    "cfg_video_drop_prob",
     "tower_self_cond_prob",
     "tower_self_cond_cfg_min",
     "tower_self_cond_cfg_max",
+    "audio_cfg_scale",
+    "video_cfg_scale",
+    "grad_norm_balance",
+    "grad_norm_target",
+    "grad_norm_update_interval",
+    "max_audio_duration_ms",
+    "max_video_frames_gen",
 )
 
 
@@ -88,6 +97,15 @@ class TrainConfig:
     video_context_token_id: int = -1
     video_patch_dim: int = 1024
     video_num_frames: int = 16
+    cfg_audio_drop_prob: float = 0.0
+    cfg_video_drop_prob: float = 0.0
+    audio_cfg_scale: float = 1.0
+    video_cfg_scale: float = 1.0
+    grad_norm_balance: bool = False
+    grad_norm_target: float = 1.0
+    grad_norm_update_interval: int = 100
+    max_audio_duration_ms: int = 5000
+    max_video_frames_gen: int = 16
     attn_implementation: str = "sdpa"
     # Step-based curriculum. Each item requires stage + until_step; optional overrides:
     # max_seq_length, max_pixels, min_pixels, per_device_train_batch_size,
