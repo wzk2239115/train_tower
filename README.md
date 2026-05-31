@@ -149,6 +149,38 @@ MAX_STEPS=10 DATASETS=blip3o_short_pt ./scripts/train_smoke.sh
 
 **Multi GPU:** `NUM_GPUS=8 ./scripts/train_pretrain.sh` — DeepSpeed ZeRO-2 from yaml is enabled automatically.
 
+### Resume full pipeline after `world_pt_h800`
+
+If Stage 0 (`world_pt_h800`) already finished on H100/H800 and you want to continue all remaining stages in order:
+
+```bash
+chmod +x scripts/h100_resume_pipeline.sh
+./scripts/h100_resume_pipeline.sh
+```
+
+Default chain:
+
+```text
+outputs/pretrain/world_pt_h800
+  -> outputs/pretrain/uw_h800
+  -> outputs/pretrain/gen_pt_h800
+  -> outputs/pretrain/mt_h800
+  -> outputs/pretrain/sft_h800
+```
+
+Configs used by the script:
+
+- `configs/train/understanding_warmup_h800_resume.yaml`
+- `configs/train/generation_pt_h800_resume.yaml`
+- `configs/train/unified_mt_h800_resume.yaml`
+- `configs/train/unified_sft_h800_resume.yaml`
+
+Optional overrides:
+
+- `WORLD_CKPT` to change the Stage 0 checkpoint path.
+- `UW_CONFIG` / `GEN_PT_CONFIG` / `MT_CONFIG` / `SFT_CONFIG` to swap stage configs.
+- `DATASETS` / `MAX_STEPS` / `OUTPUT_DIR` (forwarded to `tower.cli train`) for ad-hoc runs.
+
 ## Data visualization (terminal)
 
 Inspect per-stage datasets, modality coverage, Tower exit weights, and training loss curves. Headless-friendly: terminal tables + PNGs under `exports/viz/` (no GUI).
