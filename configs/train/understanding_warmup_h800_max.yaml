@@ -1,0 +1,28 @@
+# understanding_warmup — maximize H800 throughput when VRAM ~25–35% on stable resume.
+# No flow tower: safe to raise batch vs world_pt. Target ~60–70% VRAM before OOM.
+# Global batch 160 (8×20×1). If OOM: batch 16; if still low: batch 24.
+stage: understanding_warmup
+init_mode: checkpoint
+weight_init: random
+model_name_or_path: outputs/pretrain/world_pt_h800
+tokenizer_name_or_path: outputs/pretrain/world_pt_h800
+datasets: "blip3o_long_pt,blip3o_short_pt"
+loss_weights:
+  ce: 1.0
+  fm: 0.0
+max_steps: 200000
+output_dir: outputs/pretrain/uw_h800
+deepspeed: configs/deepspeed/zero2.json
+per_device_train_batch_size: 20
+gradient_accumulation_steps: 1
+learning_rate: 2.0e-4
+warmup_steps: 500
+max_seq_length: 8192
+max_pixels: 8388608
+min_pixels: 65536
+gradient_checkpointing: false
+bf16: true
+logging_steps: 10
+save_steps: 5000
+save_total_limit: 2
+dataloader_num_workers: 12

@@ -13,25 +13,35 @@ h100_env_setup
 source "${ROOT}/scripts/train_env.sh"
 
 WORLD_CKPT="${WORLD_CKPT:-outputs/pretrain/world_pt_h800}"
-H800_PROFILE="${H800_PROFILE:-stable}"  # stable | turbo_safe | turbo
+H800_PROFILE="${H800_PROFILE:-stable}"  # stable | turbo_safe | turbo | max
 case "${H800_PROFILE}" in
+  max)
+    UW_CONFIG="${UW_CONFIG:-configs/train/understanding_warmup_h800_max.yaml}"
+    GEN_PT_CONFIG="${GEN_PT_CONFIG:-configs/train/generation_pt_h800_max.yaml}"
+    MT_CONFIG="${MT_CONFIG:-configs/train/unified_mt_h800_max.yaml}"
+    SFT_CONFIG="${SFT_CONFIG:-configs/train/unified_sft_h800_max.yaml}"
+    export TOWER_DATALOADER_NUM_WORKERS="${TOWER_DATALOADER_NUM_WORKERS:-12}"
+    ;;
   turbo)
     UW_CONFIG="${UW_CONFIG:-configs/train/understanding_warmup_h800_turbo.yaml}"
     GEN_PT_CONFIG="${GEN_PT_CONFIG:-configs/train/generation_pt_h800_turbo.yaml}"
     MT_CONFIG="${MT_CONFIG:-configs/train/unified_mt_h800_turbo.yaml}"
     SFT_CONFIG="${SFT_CONFIG:-configs/train/unified_sft_h800_turbo.yaml}"
+    export TOWER_DATALOADER_NUM_WORKERS="${TOWER_DATALOADER_NUM_WORKERS:-12}"
     ;;
   turbo_safe)
     UW_CONFIG="${UW_CONFIG:-configs/train/understanding_warmup_h800_turbo_safe.yaml}"
     GEN_PT_CONFIG="${GEN_PT_CONFIG:-configs/train/generation_pt_h800_turbo_safe.yaml}"
     MT_CONFIG="${MT_CONFIG:-configs/train/unified_mt_h800_turbo_safe.yaml}"
     SFT_CONFIG="${SFT_CONFIG:-configs/train/unified_sft_h800_turbo_safe.yaml}"
+    export TOWER_DATALOADER_NUM_WORKERS="${TOWER_DATALOADER_NUM_WORKERS:-8}"
     ;;
   *)
     UW_CONFIG="${UW_CONFIG:-configs/train/understanding_warmup_h800_resume.yaml}"
     GEN_PT_CONFIG="${GEN_PT_CONFIG:-configs/train/generation_pt_h800_resume.yaml}"
     MT_CONFIG="${MT_CONFIG:-configs/train/unified_mt_h800_resume.yaml}"
     SFT_CONFIG="${SFT_CONFIG:-configs/train/unified_sft_h800_resume.yaml}"
+    export TOWER_DATALOADER_NUM_WORKERS="${TOWER_DATALOADER_NUM_WORKERS:-8}"
     ;;
 esac
 
@@ -57,7 +67,6 @@ run_stage() {
   echo "[h100_resume_pipeline] profile=${H800_PROFILE}"
   echo "[h100_resume_pipeline] MASTER=${MASTER_ADDR}:${MASTER_PORT} USE_DEEPSPEED=${USE_DEEPSPEED}"
   export TOWER_DATALOADER_PREFLIGHT_STEPS="${TOWER_DATALOADER_PREFLIGHT_STEPS:-20}"
-  export TOWER_DATALOADER_NUM_WORKERS="${TOWER_DATALOADER_NUM_WORKERS:-4}"
   echo "[h100_resume_pipeline] dataloader_preflight_steps=${TOWER_DATALOADER_PREFLIGHT_STEPS}"
   echo "[h100_resume_pipeline] dataloader_workers=${TOWER_DATALOADER_NUM_WORKERS}"
   [[ -n "${DATASETS:-}" ]] && echo "[h100_resume_pipeline] DATASETS=${DATASETS}"

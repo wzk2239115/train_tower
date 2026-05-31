@@ -175,10 +175,25 @@ Configs used by the script:
 - `configs/train/unified_mt_h800_resume.yaml`
 - `configs/train/unified_sft_h800_resume.yaml`
 
+**H800 profiles** (`H800_PROFILE=…`):
+
+| Profile | When to use | UW global batch | Notes |
+|---------|-------------|-----------------|-------|
+| `stable` (default) | Safe default | 64 (8×8) | grad checkpointing on |
+| `turbo_safe` | Slight speedup | 72 (8×9) | |
+| `turbo` | More speed, watch VRAM | 80 (8×10) | grad checkpointing off on UW/Gen |
+| `max` | VRAM ~25% on `stable` (8×H800) | **160 (8×20)** | batch↑, no grad ckpt, `max_pixels` 8M |
+
+```bash
+# After Stage 0; use when GPU mem is mostly idle (~25%):
+H800_PROFILE=max ./scripts/h100_resume_pipeline.sh
+```
+
 Optional overrides:
 
 - `WORLD_CKPT` to change the Stage 0 checkpoint path.
 - `UW_CONFIG` / `GEN_PT_CONFIG` / `MT_CONFIG` / `SFT_CONFIG` to swap stage configs.
+- `TOWER_DATALOADER_NUM_WORKERS` (default 8 stable / 12 max|turbo; was incorrectly pinned to 4).
 - `DATASETS` / `MAX_STEPS` / `OUTPUT_DIR` (forwarded to `tower.cli train`) for ad-hoc runs.
 
 ## Data visualization (terminal)
