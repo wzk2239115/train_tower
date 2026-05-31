@@ -1,0 +1,53 @@
+stage: world_pt
+description: "Stage 0 — World model JEPA 预训练. 仅 image+text, JEPA on understanding-path vision embeddings"
+
+checkpoint:
+  init_mode: scratch
+  weight_init: random
+  model_config_path: configs/model/sensenova_500m_mot
+  tokenizer_name_or_path: configs/tokenizer/qwen3
+
+# world_pt 不使用 pool_mix, 直接引用 image+text 数据集
+datasets: "img_gen__blip3o_long_pt,img_gen__blip3o_short_pt"
+
+use_flow_tower: true
+
+loss_weights:
+  ce: 0.0
+  fm: 0.0
+
+tower:
+  decoder_prob: 0.0
+  self_cond_prob: 0.0
+
+hyperparams:
+  learning_rate: 2.0e-4
+  warmup_steps: 500
+  max_steps: 50000
+  max_seq_length: 8192
+  max_pixels: 4194304
+  min_pixels: 65536
+  per_device_train_batch_size: 2
+  gradient_accumulation_steps: 4
+  gradient_checkpointing: true
+  bf16: true
+  logging_steps: 10
+  save_steps: 5000
+  save_total_limit: 2
+  dataloader_num_workers: 2
+
+output_dir: outputs/pretrain/world_pt
+deepspeed: configs/deepspeed/zero2.json
+
+tower_exit_weights:
+  world_elf: 1.0
+  semantic_elf: 0.1
+  audio_elf: 0.0
+  video_elf: 0.0
+  understanding_elf: 0.0
+  generative_elf: 0.0
+
+note: |
+  world_pt 只训练前 8 层 (shallow_train_layers=8).
+  audio/video exits weight=0, 不需要 audio/video 数据.
+  JEPA 在 understanding-path vision embeddings 上做 target prediction.

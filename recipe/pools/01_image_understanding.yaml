@@ -1,0 +1,98 @@
+pool_id: image_understanding
+task_types: [image_caption, image_qa, image_dialogue, ocr, doc_understanding]
+modality: [image, text]
+description: "图像理解 — 视觉输入基础能力"
+
+datasets:
+  - name: LLaVA-Instruct-150K
+    key: img_und__llava150k
+    source: "$DATA_ROOT/llava_instruct_150k"
+    annotation_file: train.jsonl
+    size: 150_000
+    format: image_dialogue
+    quality_tier: gold
+    sampling_rate: 1.0
+
+  - name: ShareGPT4V
+    key: img_und__sharegpt4v
+    source: "$DATA_ROOT/sharegpt4v"
+    annotation_file: train.jsonl
+    size: 100_000
+    format: image_dialogue
+    quality_tier: gold
+    sampling_rate: 1.0
+
+  - name: Cambrian-10M
+    key: img_und__cambrian
+    source: "$DATA_ROOT/cambrian_10m"
+    annotation_file: train.jsonl
+    size: 10_000_000
+    format: image_qa
+    quality_tier: silver
+    sampling_rate: 0.1
+
+  - name: ALLaVA
+    key: img_und__allava
+    source: "$DATA_ROOT/allava"
+    annotation_file: train.jsonl
+    size: 1_400_000
+    format: image_dialogue
+    quality_tier: silver
+    sampling_rate: 0.3
+
+  - name: LAION-COCO-Caption
+    key: img_und__laion_coco
+    source: "$DATA_ROOT/laion_coco"
+    annotation_file: train.jsonl
+    size: 300_000
+    format: image_caption
+    quality_tier: silver
+    sampling_rate: 0.2
+
+  - name: JourneyDB
+    key: img_und__journeydb
+    source: "$DATA_ROOT/journeydb"
+    annotation_file: train.jsonl
+    size: 4_000_000
+    format: image_caption
+    quality_tier: gold
+    sampling_rate: 0.15
+
+  - name: DocVQA
+    key: img_und__docvqa
+    source: "$DATA_ROOT/docvqa"
+    annotation_file: train.jsonl
+    size: 40_000
+    format: image_qa
+    quality_tier: gold
+    sampling_rate: 1.0
+
+  - name: ChartQA
+    key: img_und__chartqa
+    source: "$DATA_ROOT/chartqa"
+    annotation_file: train.jsonl
+    size: 28_000
+    format: image_qa
+    quality_tier: gold
+    sampling_rate: 1.0
+
+conversion:
+  image_caption:
+    conversations:
+      - from: human
+        value: "<image>\nDescribe this image in detail."
+      - from: gpt
+        value: "{caption}"
+    image_field: image
+
+  image_qa:
+    conversations:
+      - from: human
+        value: "<image>\n{question}"
+      - from: gpt
+        value: "{answer}"
+    image_field: image
+
+  image_dialogue:
+    conversations: "{multi_turn_conversations}"
+    image_field: image

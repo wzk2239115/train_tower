@@ -1,0 +1,98 @@
+stage: unified_sft
+description: "Stage 4 — 全模态 SFT. 高质量指令跟随 + 精确多模态生成"
+
+checkpoint:
+  init_mode: checkpoint
+  model_name_or_path: outputs/pretrain/mt
+  tokenizer_name_or_path: outputs/pretrain/mt
+
+# ========================================
+# SFT 阶段：更高质量, 更少低质数据
+# ========================================
+pool_mix:
+  text:                    0.05
+  image_understanding:     0.15
+  image_generation:        0.10
+  audio_understanding:     0.08
+  audio_generation:        0.08
+  video_understanding:     0.08
+  video_generation:        0.08
+  av_sync:                 0.08
+  interleaved_omni:        0.30
+
+# SFT 阶段的质量过滤
+quality_filter:
+  text: gold_only
+  image_understanding: gold_only
+  image_generation: gold_and_silver
+  audio_understanding: gold_only
+  audio_generation: gold_only
+  video_understanding: gold_and_silver
+  video_generation: gold_and_silver
+  av_sync: gold_only
+  interleaved_omni: gold_only
+
+use_flow_tower: true
+
+loss_weights:
+  ce: 1.0
+  fm: 0.1
+
+tower:
+  decoder_prob: 0.3
+  self_cond_prob: 0.2
+  self_cond_cfg_min: 1.0
+  self_cond_cfg_max: 1.5
+  cfg_label_drop_prob: 0.10
+
+hyperparams:
+  learning_rate: 1.2e-4
+  warmup_steps: 200
+  max_steps: 20000
+  max_seq_length: 16384
+  max_pixels: 4194304
+  min_pixels: 65536
+  per_device_train_batch_size: 2
+  gradient_accumulation_steps: 2
+  gradient_checkpointing: true
+  bf16: true
+  logging_steps: 10
+  save_steps: 1000
+  save_total_limit: 2
+  dataloader_num_workers: 2
+
+output_dir: outputs/pretrain/sft
+deepspeed: configs/deepspeed/zero2.json
+
+tower_exit_weights:
+  world_elf: 0.05
+  semantic_elf: 0.1
+  audio_elf: 0.15
+  video_elf: 0.15
+  understanding_elf: 1.0
+  generative_elf: 0.1
+
+evaluation:
+  benchmarks:
+    image_gen: [FID-30K, CLIP-Score, GenEval]
+    audio_gen: [FD, CLAP-Score, AudioCaption-BLEU]
+    video_gen: [FVD, CLIP-Score, VBench]
+    image_und: [MMBench, MMMU, MathVista]
+    audio_und: [AudioCaps-BLEU, Clotho-BLEU]
+    video_und: [MSR-VTT-R@1, VideoChatGPT-QA]
+    text: [MMLU, C-Eval, IFEval]
+    interleaved: [OmniGen-Bench, InterleaveGen-Rouge]
+  eval_interval: 2000
+
+note: |
+  SFT 阶段的关键差异：
+  
+  1. quality_filter 启用：只使用 gold 和 gold_and_silver 数据
+  2. interleaved_omni 提升到 30%：强化交织多模态输出能力
+  3. fm weight 降到 0.1：CE 为主，防止 FM 过拟合
+  4. tower exit 权重略降：audio/video 从 0.2 降到 0.15
+  5. cfg_max 降到 1.5：更保守的 classifier-free guidance
+  6. learning_rate 稍高 1.2e-4：SFT 阶段可以稍激进
+  7. max_steps 降到 20000：高质量数据不需要太多步
+  
+  这是最后一个训练阶段, 输出即可用于 Super-Omni 推理.

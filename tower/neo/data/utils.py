@@ -21,6 +21,12 @@ from .constants import (
     IMG_START_TOKEN,
     SIGLIP_MEAN,
     SIGLIP_STD,
+    AUDIO_CONTEXT_TOKEN,
+    AUDIO_END_TOKEN,
+    AUDIO_START_TOKEN,
+    VIDEO_CONTEXT_TOKEN,
+    VIDEO_END_TOKEN,
+    VIDEO_START_TOKEN,
 )
 
 
@@ -228,6 +234,8 @@ def tokenize_mm_chat_conversations(
     num_image_token_list: List[int],
     truncation: bool = False,
     num_image: int = 1,
+    num_audio_token_list: List[int] | None = None,
+    num_video_token_list: List[int] | None = None,
 ) -> Dict:
     roles = {
         "human": "user",
@@ -237,13 +245,29 @@ def tokenize_mm_chat_conversations(
     conversation_start = "<|im_start|>"
     conversation_end = "<|im_end|>\n"
     num_image = len(num_image_token_list)
+    if num_audio_token_list is None:
+        num_audio_token_list = []
+    if num_video_token_list is None:
+        num_video_token_list = []
     new_conversations = []
     cur_image_idx = 0
+    cur_audio_idx = 0
+    cur_video_idx = 0
     for conv in conversations:
         while "<image>" in conv["value"] and cur_image_idx < num_image:
             image_tokens = f"{IMG_START_TOKEN}{IMG_CONTEXT_TOKEN * num_image_token_list[cur_image_idx]}{IMG_END_TOKEN}"
             conv["value"] = conv["value"].replace("<image>", image_tokens, 1)
             cur_image_idx += 1
+        while "<audio>" in conv["value"] and cur_audio_idx < len(num_audio_token_list):
+            n_audio_tok = num_audio_token_list[cur_audio_idx]
+            audio_tokens = f"{AUDIO_START_TOKEN}{AUDIO_CONTEXT_TOKEN * n_audio_tok}{AUDIO_END_TOKEN}"
+            conv["value"] = conv["value"].replace("<audio>", audio_tokens, 1)
+            cur_audio_idx += 1
+        while "<video>" in conv["value"] and cur_video_idx < len(num_video_token_list):
+            n_video_tok = num_video_token_list[cur_video_idx]
+            video_tokens = f"{VIDEO_START_TOKEN}{VIDEO_CONTEXT_TOKEN * n_video_tok}{VIDEO_END_TOKEN}"
+            conv["value"] = conv["value"].replace("<video>", video_tokens, 1)
+            cur_video_idx += 1
         new_conversations.append(conv)
     conversations = new_conversations
 

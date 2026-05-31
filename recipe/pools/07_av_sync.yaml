@@ -1,0 +1,108 @@
+pool_id: av_sync
+task_types: [av_correspondence, video_to_audio, audio_to_video, text_to_av]
+modality: [audio, video, text]
+description: "音视频同步 — Super-Omni 与普通多模态的关键区别"
+
+datasets:
+  - name: VGGSound
+    key: av_sync__vggsound
+    source: "$DATA_ROOT/vggsound"
+    annotation_file: train.jsonl
+    size: 210_000
+    format: av_correspondence
+    quality_tier: gold
+    sampling_rate: 1.0
+    note: "210K+ 视频, 310 类音画对应"
+
+  - name: AudioSet-AV
+    key: av_sync__audioset_av
+    source: "$DATA_ROOT/audioset_av"
+    annotation_file: train.jsonl
+    size: 2_084_320
+    format: av_correspondence
+    quality_tier: silver
+    sampling_rate: 0.05
+    note: "大规模 YouTube 声音事件，带视频来源"
+
+  - name: AVSpeech
+    key: av_sync__avspeech
+    source: "$DATA_ROOT/avspeech"
+    annotation_file: train.jsonl
+    size: 4_700
+    format: av_correspondence
+    quality_tier: gold
+    sampling_rate: 1.0
+    note: "4700 小时视频, 可见说话人 + 可听语音对应, 290K YouTube 视频"
+
+  - name: VoxCeleb2
+    key: av_sync__voxceleb2
+    source: "$DATA_ROOT/voxceleb2"
+    annotation_file: train.jsonl
+    size: 1_000_000
+    format: av_correspondence
+    quality_tier: gold
+    sampling_rate: 0.3
+    note: "人脸-语音说话人对应, 6000+ 说话人"
+
+  - name: LRS3
+    key: av_sync__lrs3
+    source: "$DATA_ROOT/lrs3"
+    annotation_file: train.jsonl
+    size: 150_000
+    format: av_correspondence
+    quality_tier: gold
+    sampling_rate: 0.5
+    note: "唇读/说话视频, 151 小时"
+
+  - name: YouTube-ASMR-300K
+    key: av_sync__asmr
+    source: "$DATA_ROOT/youtube_asmr"
+    annotation_file: train.jsonl
+    size: 300_000
+    format: av_correspondence
+    quality_tier: silver
+    sampling_rate: 0.3
+    note: "空间声音/视听对应"
+
+conversion:
+  av_correspondence:
+    conversations:
+      - from: human
+        value: "<video>\nWhat sounds can you hear in this video?"
+      - from: gpt
+        value: "{sound_description}"
+    video_field: video
+    audio_field: audio
+
+  video_to_audio:
+    conversations:
+      - from: human
+        value: "<video>\nGenerate the audio that matches this video."
+      - from: gpt
+        value: "<audio>"
+    video_field: video
+    audio_field: audio
+    meta:
+      task: t2a
+
+  audio_to_video:
+    conversations:
+      - from: human
+        value: "<audio>\nGenerate a video that matches this sound."
+      - from: gpt
+        value: "<video>"
+    audio_field: audio
+    video_field: video
+    meta:
+      task: t2v
+
+  text_to_av:
+    conversations:
+      - from: human
+        value: "Generate synchronized video and audio for: {caption}"
+      - from: gpt
+        value: "<video><audio>"
+    video_field: video
+    audio_field: audio
+    meta:
+      task: interleave

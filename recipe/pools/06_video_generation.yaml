@@ -1,0 +1,83 @@
+pool_id: video_generation
+task_types: [t2v, i2v]
+modality: [text, video, image]
+description: "视频生成 — Text → Video / Image → Video, 模型输出 <video>"
+
+datasets:
+  - name: OpenVid-1M
+    key: vid_gen__openvid
+    source: "$DATA_ROOT/openvid_1m"
+    annotation_file: train.jsonl
+    size: 1_000_000
+    format: t2v
+    quality_tier: gold
+    sampling_rate: 1.0
+    note: "ICLR 2025, 高质量 text-to-video, 强调美学和清晰度"
+
+  - name: WebVid-10M-T2V
+    key: vid_gen__webvid_t2v
+    source: "$DATA_ROOT/webvid_10m_t2v"
+    annotation_file: train.jsonl
+    size: 10_000_000
+    format: t2v
+    quality_tier: silver
+    sampling_rate: 0.08
+
+  - name: Panda-70M-T2V
+    key: vid_gen__panda70m_t2v
+    source: "$DATA_ROOT/panda_70m_t2v"
+    annotation_file: train.jsonl
+    size: 70_000_000
+    format: t2v
+    quality_tier: silver
+    sampling_rate: 0.03
+
+  - name: InternVid-T2V
+    key: vid_gen__internvid_t2v
+    source: "$DATA_ROOT/internvid_t2v"
+    annotation_file: train.jsonl
+    size: 7_000_000
+    format: t2v
+    quality_tier: silver
+    sampling_rate: 0.1
+
+  - name: MiraData
+    key: vid_gen__miradata
+    source: "$DATA_ROOT/miradata"
+    annotation_file: train.jsonl
+    size: 500_000
+    format: t2v
+    quality_tier: gold
+    sampling_rate: 1.0
+    note: "高质量 T2V 数据"
+
+  - name: VidProM
+    key: vid_gen__vidprom
+    source: "$DATA_ROOT/vidprom"
+    annotation_file: train.jsonl
+    size: 1_600_000
+    format: t2v
+    quality_tier: silver
+    sampling_rate: 0.3
+
+conversion:
+  t2v:
+    conversations:
+      - from: human
+        value: "{caption}"
+      - from: gpt
+        value: "<video>"
+    video_field: video
+    meta:
+      task: t2v
+
+  i2v:
+    conversations:
+      - from: human
+        value: "<image>\nAnimate this image: {motion_instruction}"
+      - from: gpt
+        value: "<video>"
+    image_field: image
+    video_field: video
+    meta:
+      task: i2v

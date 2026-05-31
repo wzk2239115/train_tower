@@ -1,0 +1,109 @@
+pool_id: video_understanding
+task_types: [video_caption, video_qa, temporal_reasoning, action_recognition]
+modality: [video, text]
+description: "视频理解 — 让模型看懂视频"
+
+datasets:
+  - name: WebVid-10M
+    key: vid_und__webvid
+    source: "$DATA_ROOT/webvid_10m"
+    annotation_file: train.jsonl
+    size: 10_000_000
+    format: video_caption
+    quality_tier: silver
+    sampling_rate: 0.1
+    note: "1000 万 video-text pairs"
+
+  - name: Panda-70M
+    key: vid_und__panda70m
+    source: "$DATA_ROOT/panda_70m"
+    annotation_file: train.jsonl
+    size: 70_000_000
+    format: video_caption
+    quality_tier: silver
+    sampling_rate: 0.05
+    note: "7000 万高质量 video-caption pairs"
+
+  - name: InternVid
+    key: vid_und__internvid
+    source: "$DATA_ROOT/internvid"
+    annotation_file: train.jsonl
+    size: 7_000_000
+    format: video_caption
+    quality_tier: silver
+    sampling_rate: 0.1
+    note: "700 万视频, 234M clips, 4.1B words"
+
+  - name: ActivityNet-Captions
+    key: vid_und__activitynet
+    source: "$DATA_ROOT/activitynet_captions"
+    annotation_file: train.jsonl
+    size: 20_000
+    format: video_caption
+    quality_tier: gold
+    sampling_rate: 1.0
+    note: "长视频事件描述"
+
+  - name: YouCook2
+    key: vid_und__youcook2
+    source: "$DATA_ROOT/youcook2"
+    annotation_file: train.jsonl
+    size: 14_000
+    format: video_caption
+    quality_tier: gold
+    sampling_rate: 1.0
+    note: "做饭过程理解"
+
+  - name: MSR-VTT
+    key: vid_und__msrvtt
+    source: "$DATA_ROOT/msrvtt"
+    annotation_file: train.jsonl
+    size: 10_000
+    format: video_qa
+    quality_tier: gold
+    sampling_rate: 1.0
+
+  - name: VATEX
+    key: vid_und__vatex
+    source: "$DATA_ROOT/vatex"
+    annotation_file: train.jsonl
+    size: 26_000
+    format: video_caption
+    quality_tier: gold
+    sampling_rate: 1.0
+    note: "中英双语视频 caption"
+
+  - name: VideoChatGPT
+    key: vid_und__videochatgpt
+    source: "$DATA_ROOT/videochatgpt"
+    annotation_file: train.jsonl
+    size: 100_000
+    format: video_qa
+    quality_tier: gold
+    sampling_rate: 1.0
+    note: "视频指令跟随"
+
+conversion:
+  video_caption:
+    conversations:
+      - from: human
+        value: "<video>\nDescribe this video in detail."
+      - from: gpt
+        value: "{caption}"
+    video_field: video
+
+  video_qa:
+    conversations:
+      - from: human
+        value: "<video>\n{question}"
+      - from: gpt
+        value: "{answer}"
+    video_field: video
+
+  temporal_reasoning:
+    conversations:
+      - from: human
+        value: "<video>\nWhat happens in chronological order in this video?"
+      - from: gpt
+        value: "{temporal_description}"
+    video_field: video

@@ -1,0 +1,75 @@
+pool_id: image_generation
+task_types: [t2i]
+modality: [text, image]
+description: "图像生成 — Text → Image, 模型输出 <image>"
+
+datasets:
+  - name: JourneyDB-T2I
+    key: img_gen__journeydb
+    source: "$DATA_ROOT/journeydb"
+    annotation_file: t2i_train.jsonl
+    size: 4_000_000
+    format: t2i
+    quality_tier: gold
+    sampling_rate: 1.0
+    note: "prompt → image, 高质量 Midjourney 图像，天然适合 T2I 训练"
+
+  - name: LAION-Aesthetics-6.5
+    key: img_gen__laion_aesthetic
+    source: "$DATA_ROOT/laion_aesthetics_6.5"
+    annotation_file: train.jsonl
+    size: 12_000_000
+    format: t2i
+    quality_tier: silver
+    sampling_rate: 0.15
+    filter: "NSFW/儿童隐私/低质水印/政治敏感 已过滤"
+    note: "LAION-5B 美学子集，需强过滤后使用"
+
+  - name: COYO-700M-Clean
+    key: img_gen__coyo
+    source: "$DATA_ROOT/coyo_700m_clean"
+    annotation_file: train.jsonl
+    size: 50_000_000
+    format: t2i
+    quality_tier: bronze
+    sampling_rate: 0.05
+    filter: "去重 + CLIP score > 0.28 + 无水印"
+    note: "大规模图文预训练，需强过滤"
+
+  - name: CC12M
+    key: img_gen__cc12m
+    source: "$DATA_ROOT/cc12m"
+    annotation_file: train.jsonl
+    size: 12_000_000
+    format: t2i
+    quality_tier: silver
+    sampling_rate: 0.1
+
+  - name: BLIP3O-Long
+    key: img_gen__blip3o_long
+    source: "$DATA_ROOT/blip3o_long"
+    annotation_file: train.jsonl
+    size: 2_000_000
+    format: t2i
+    quality_tier: gold
+    sampling_rate: 1.0
+
+  - name: BLIP3O-Short
+    key: img_gen__blip3o_short
+    source: "$DATA_ROOT/blip3o_short"
+    annotation_file: train.jsonl
+    size: 5_000_000
+    format: t2i
+    quality_tier: gold
+    sampling_rate: 0.5
+
+conversion:
+  t2i:
+    conversations:
+      - from: human
+        value: "{caption}"
+      - from: gpt
+        value: "<image>"
+    image_field: image
+    meta:
+      task: t2i

@@ -1,0 +1,56 @@
+stage: generation_pt
+description: "Stage 2 — 生成路径预训练. Flow matching on pixel patches + 语义 flow"
+
+checkpoint:
+  init_mode: checkpoint
+  model_name_or_path: outputs/pretrain/uw
+  tokenizer_name_or_path: outputs/pretrain/uw
+
+datasets: "img_gen__blip3o_long_pt,img_gen__blip3o_short_pt"
+
+use_flow_tower: false
+
+loss_weights:
+  ce: 0.0
+  fm: 1.0
+
+tower:
+  decoder_prob: 0.0
+  self_cond_prob: 0.5
+  self_cond_cfg_min: 1.0
+  self_cond_cfg_max: 3.0
+  cfg_label_drop_prob: 0.15
+
+task_override: t2i
+
+hyperparams:
+  learning_rate: 1.0e-4
+  warmup_steps: 500
+  max_steps: 100000
+  max_seq_length: 8192
+  max_pixels: 4194304
+  min_pixels: 65536
+  per_device_train_batch_size: 2
+  gradient_accumulation_steps: 4
+  gradient_checkpointing: true
+  bf16: true
+  logging_steps: 10
+  save_steps: 5000
+  save_total_limit: 2
+  dataloader_num_workers: 2
+
+output_dir: outputs/pretrain/gen_pt
+deepspeed: configs/deepspeed/zero2.json
+
+tower_exit_weights:
+  world_elf: 0.0
+  semantic_elf: 0.1
+  audio_elf: 0.0
+  video_elf: 0.05
+  understanding_elf: 0.0
+  generative_elf: 1.0
+
+note: |
+  主要是 T2I flow matching on pixel patches.
+  video_elf 有微小 weight=0.05, 但 task_override=t2i 所以实际上不会走 video 路径.
+  如果未来要在 gen_pt 引入 video FM, 需去掉 task_override 并加入 video 数据.

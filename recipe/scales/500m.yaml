@@ -1,0 +1,35 @@
+scale: 500m
+description: "26L @ 768d — 生产基线, 匹配 configs/sizes/500m.yaml"
+
+data_multiplier: 1.0
+step_multiplier: 1.0
+lr_multiplier: 1.0
+
+max_seq_length: 16384
+effective_batch_size: 8          # 2 GPU × 2 batch × 2 accum
+
+# 500M 基线不需要额外采样覆盖
+pool_sampling: {}
+
+stage_overrides:
+  world_pt:
+    max_steps: 50000
+  understanding_warmup:
+    max_steps: 200000
+  generation_pt:
+    max_steps: 100000
+  unified_mt:
+    max_steps: 50000
+  unified_sft:
+    max_steps: 20000
+
+gpu_requirements:
+  min_gpus: 2
+  gpu_memory: "80GB (A100/H100)"
+  estimated_training_time:
+    world_pt: "~3 days"
+    understanding_warmup: "~10 days"
+    generation_pt: "~6 days"
+    unified_mt: "~8 days"
+    unified_sft: "~3 days"
+    total: "~30 days on 2× A100"

@@ -1,0 +1,91 @@
+pool_id: audio_understanding
+task_types: [audio_caption, audio_qa, sound_event, audio_scene]
+modality: [audio, text]
+description: "音频理解 — 让模型听懂声音"
+
+datasets:
+  - name: AudioCaps
+    key: aud_und__audiocaps
+    source: "$DATA_ROOT/audiocaps"
+    annotation_file: train.jsonl
+    size: 57_188
+    format: audio_caption
+    quality_tier: gold
+    sampling_rate: 1.0
+    note: "人工标注音频描述，~57K 样本"
+
+  - name: WavCaps
+    key: aud_und__wavcaps
+    source: "$DATA_ROOT/wavcaps"
+    annotation_file: train.jsonl
+    size: 403_050
+    format: audio_caption
+    quality_tier: silver
+    sampling_rate: 1.0
+    filter: "去除 ChatGPT 水印标注"
+    note: "弱标注 audio caption，来自 FreeSound/BBC/SoundBible/AudioSet"
+
+  - name: Clotho
+    key: aud_und__clotho
+    source: "$DATA_ROOT/clotho"
+    annotation_file: train.jsonl
+    size: 5_929
+    format: audio_caption
+    quality_tier: gold
+    sampling_rate: 1.0
+    note: "高质量音频 caption，评估 + 高质量混入"
+
+  - name: FSD50K
+    key: aud_und__fsd50k
+    source: "$DATA_ROOT/fsd50k"
+    annotation_file: train.jsonl
+    size: 51_197
+    format: sound_event
+    quality_tier: gold
+    sampling_rate: 1.0
+    note: "5.1 万音频，200 类声音事件"
+
+  - name: AudioSet-Balanced
+    key: aud_und__audioset
+    source: "$DATA_ROOT/audioset_balanced"
+    annotation_file: train.jsonl
+    size: 20_000
+    format: sound_event
+    quality_tier: gold
+    sampling_rate: 1.0
+    note: "208 万 10s YouTube 声音片段的平衡子集，632 类"
+
+  - name: AudioSet-Full
+    key: aud_und__audioset_full
+    source: "$DATA_ROOT/audioset_full"
+    annotation_file: train.jsonl
+    size: 2_084_320
+    format: sound_event
+    quality_tier: silver
+    sampling_rate: 0.1
+    note: "完整 AudioSet，大规模但噪声较多"
+
+conversion:
+  audio_caption:
+    conversations:
+      - from: human
+        value: "<audio>\nDescribe the sound you hear."
+      - from: gpt
+        value: "{caption}"
+    audio_field: audio
+
+  sound_event:
+    conversations:
+      - from: human
+        value: "<audio>\nWhat events can you hear in this audio?"
+      - from: gpt
+        value: "{event_labels}"
+    audio_field: audio
+
+  audio_qa:
+    conversations:
+      - from: human
+        value: "<audio>\n{question}"
+      - from: gpt
+        value: "{answer}"
+    audio_field: audio

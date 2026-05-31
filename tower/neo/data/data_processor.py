@@ -13,7 +13,9 @@ from transformers.utils import logging
 from ..train.argument import DataArguments, TrainingArguments
 from . import data_list
 from .constants import (ALL_SPECIAL_TOKEN_LIST, IGNORE_INDEX,
-                        IMG_CONTEXT_TOKEN, IMG_START_TOKEN)
+                        IMG_CONTEXT_TOKEN, IMG_START_TOKEN,
+                        AUDIO_CONTEXT_TOKEN, AUDIO_START_TOKEN,
+                        VIDEO_CONTEXT_TOKEN, VIDEO_START_TOKEN)
 from .utils import (build_transform, dynamic_preprocess_native_resolution,
                     len2weight, tokenize_mm_chat_conversations)
 
@@ -180,18 +182,90 @@ class LazySupervisedDataset(Dataset):
             pixel_values = []
             num_image_tokens = []
 
+        audio_path_list = []
+        if "audio" in source:
+            audio_path_list = (
+                source["audio"]
+                if isinstance(source["audio"], list)
+                else [source["audio"]]
+            )
+        elif "audios" in source:
+            audio_path_list = source["audios"]
+        num_audio = len(audio_path_list)
+        num_audio_tokens = []
+        if num_audio > 0:
+            from tower.io.audio import audio_file_to_patch_features
+
+            for conv in source["conversations"]:
+                if conv["from"] == "human":
+                    if "<audio>" not in conv["value"]:
+                        conv["value"] = "<audio>\n" + conv["value"]
+                    break
+            for audio_path in audio_path_list:
+                if isinstance(audio_path, str) and audio_path.strip():
+                    try:
+                        feats = audio_file_to_patch_features(
+                            audio_path,
+                            n_freq_bins=self.data_args.audio_n_mels,
+                            patch_frames=self.data_args.audio_patch_frames,
+                            patch_bins=self.data_args.audio_patch_bins,
+                            max_patches=self.data_args.audio_max_patches,
+                        )
+                        num_audio_tokens.append(feats.shape[0])
+                    except Exception:
+                        num_audio_tokens.append(self.data_args.audio_max_patches)
+                else:
+                    num_audio_tokens.append(self.data_args.audio_max_patches)
+
+        video_path_list = []
+        if "video" in source:
+            video_path_list = (
+                source["video"]
+                if isinstance(source["video"], list)
+                else [source["video"]]
+            )
+        elif "videos" in source:
+            video_path_list = source["videos"]
+        num_video = len(video_path_list)
+        num_video_tokens = []
+        if num_video > 0:
+            num_frames = self.data_args.video_num_frames
+            from tower.models.neo_unify.modeling_omni_decoders import VideoFrameDecoder
+
+            dummy_tokens_per_frame = 256
+            tokens_per_video = num_frames * dummy_tokens_per_frame
+            for conv in source["conversations"]:
+                if conv["from"] == "human":
+                    if "<video>" not in conv["value"]:
+                        conv["value"] = "<video>\n" + conv["value"]
+                    break
+            for _ in video_path_list:
+                num_video_tokens.append(tokens_per_video)
+
         res = tokenize_mm_chat_conversations(
             conversations=source["conversations"],
             tokenizer=self.tokenizer,
             num_image_token_list=num_image_tokens,
             num_image=num_image,
+            num_audio_token_list=num_audio_tokens,
+            num_video_token_list=num_video_tokens,
         )
 
-        return dict(
+        result = dict(
             input_ids=res["input_ids"][0],
             labels=res["labels"][0],
             pixel_values=pixel_values,
         )
+
+        if num_audio > 0:
+            audio_context_id = self.tokenizer.convert_tokens_to_ids(AUDIO_CONTEXT_TOKEN)
+            result["audio_token_mask"] = res["input_ids"][0] == audio_context_id
+
+        if num_video > 0:
+            video_context_id = self.tokenizer.convert_tokens_to_ids(VIDEO_CONTEXT_TOKEN)
+            result["video_token_mask"] = res["input_ids"][0] == video_context_id
+
+        return result
 
 
 @dataclass

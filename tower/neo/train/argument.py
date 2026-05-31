@@ -38,6 +38,12 @@ class DataArguments:
     dynamic_image_size: str = field(default="native_resolution")
     max_seq_length: int = field(default=8192)
     loss_reduction: str = field(default="square")
+    audio_n_mels: int = field(default=80)
+    audio_patch_bins: int = field(default=10)
+    audio_patch_frames: int = field(default=8)
+    audio_max_patches: int = field(default=256)
+    video_num_frames: int = field(default=16)
+    video_patch_dim: int = field(default=1024)
 
 
 @dataclass

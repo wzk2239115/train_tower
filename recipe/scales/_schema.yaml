@@ -1,0 +1,78 @@
+# Scale schema — 数据规模缩放公式 (文档, 不被代码直接加载)
+#
+# 缩放法则:
+#
+# 1. 数据量:
+#    total_samples_per_pool = pool_base_samples × data_multiplier × pool_mix_ratio
+#    其中 pool_mix_ratio 来自 stage YAML, data_multiplier 来自 scale YAML
+#
+# 2. 训练步数:
+#    steps = stage_base_steps × step_multiplier
+#
+# 3. 学习率:
+#    lr = base_lr × sqrt(data_multiplier)
+#    (Chinchilla 启发式: 数据量翻倍时 lr 约增大 1.4×)
+#
+# 4. Warmup:
+#    warmup = max(500, steps × 0.01)
+#
+# 5. Effective batch size:
+#    effective_batch = n_gpu × per_device_batch × grad_accum
+#    原则: 更大模型用更大 effective_batch, 但不超显存
+#
+# 6. 序列长度:
+#    500m: 16384 (MT/SFT 阶段)
+#    1b:   32768 (MT/SFT 阶段)
+#    原则: 更大模型用更长序列, 充分利用 attention capacity
+#
+# 7. 采样率覆盖:
+#    scale YAML 可以覆盖 pool YAML 中单个数据集的 sampling_rate
+#    格式: pool_sampling: { pool_id: { dataset_key: new_rate } }
+#    当 scale 需要某个 pool 的更多数据时, 提升该 pool 的采样率
+
+scaling_laws:
+  data_multiplier: "数据量倍率, 1.0 = 基线, 2.5 = 2.5× 数据"
+  step_multiplier: "步数倍率, 1.0 = 基线, 2.0 = 2× 训练步"
+  lr_scaling: "lr = base_lr × sqrt(data_multiplier)"
+  warmup_scaling: "warmup = max(500, steps × 0.01)"
+  batch_scaling: "effective_batch ≈ n_gpu × per_device_batch × grad_accum"
+
+# 数据量级参考 (按 pool):
+pool_size_reference:
+  text:
+    gold: "~2M instruction/dialogue samples"
+    silver: "~5M instruction samples"
+    total_unique_tokens: "~50B tokens"
+
+  image_understanding:
+    gold: "~400K samples"
+    silver: "~14M samples"
+
+  image_generation:
+    gold: "~10M T2I pairs"
+    silver: "~60M T2I pairs"
+
+  audio_understanding:
+    gold: "~120K samples"
+    silver: "~2.2M samples"
+
+  audio_generation:
+    gold: "~10K hours speech + 5K music"
+    silver: "~110K hours speech + 500K sound effects"
+
+  video_understanding:
+    gold: "~200K samples"
+    silver: "~87M clips"
+
+  video_generation:
+    gold: "~3M T2V pairs"
+    silver: "~87M T2V pairs"
+
+  av_sync:
+    gold: "~800K clips"
+    silver: "~2.5M clips"
+
+  interleaved_omni:
+    gold: "~70K synthetic samples"
+    silver: "~250K synthetic samples"
+    note: "需要主动合成, 公开数据极少"

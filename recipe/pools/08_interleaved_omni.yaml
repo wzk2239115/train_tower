@@ -1,0 +1,88 @@
+pool_id: interleaved_omni
+task_types: [interleave, omni2t, t2omni, omni2omni]
+modality: [text, image, audio, video]
+description: "交织多模态 — Super-Omni 的灵魂: 文本+图像+音频+视频混合输入/输出"
+
+datasets:
+  - name: OmniCorpus-YT
+    key: omni__omnicorpus_yt
+    source: "$DATA_ROOT/omnicorpus_yt"
+    annotation_file: train.jsonl
+    size: 50_000
+    format: omni2t
+    quality_tier: silver
+    sampling_rate: 1.0
+    note: "YouTube 视频的图文交织, 来自 OpenGVLab"
+
+  - name: MIMIC-IT-Interleaved
+    key: omni__mimic_it
+    source: "$DATA_ROOT/mimic_it"
+    annotation_file: train.jsonl
+    size: 100_000
+    format: omni2t
+    quality_tier: silver
+    sampling_rate: 1.0
+    note: "多模态 in-context instruction tuning, 图文交织"
+
+  - name: InterleaveGen-HQ
+    key: omni__interleavegen
+    source: "$DATA_ROOT/interleavegen_hq"
+    annotation_file: train.jsonl
+    size: 20_000
+    format: t2omni
+    quality_tier: gold
+    sampling_rate: 1.0
+    note: "2025 高质量交织图文生成数据"
+
+  - name: Synth-Omni-SFT
+    key: omni__synth_sft
+    source: "$DATA_ROOT/synth_omni_sft"
+    annotation_file: train.jsonl
+    size: 50_000
+    format: omni2omni
+    quality_tier: gold
+    sampling_rate: 1.0
+    note: "合成交织多模态 SFT 数据, 包含 text+image+audio+video 混合输出"
+    synthetic: true
+    synthesis_pipeline: "见 recipe/synthesis/interleaved_pipeline.md"
+
+  - name: Synth-Omni-PT
+    key: omni__synth_pt
+    source: "$DATA_ROOT/synth_omni_pt"
+    annotation_file: train.jsonl
+    size: 200_000
+    format: t2omni
+    quality_tier: silver
+    sampling_rate: 1.0
+    note: "大规模合成交织预训练数据"
+    synthetic: true
+    synthesis_pipeline: "见 recipe/synthesis/interleaved_pipeline.md"
+
+conversion:
+  omni2t:
+    conversations:
+      - from: human
+        value: "{interleaved_input}"
+      - from: gpt
+        value: "{text_response}"
+    note: "interleaved_input 包含 <image>/<audio>/<video> 的混合"
+
+  t2omni:
+    conversations:
+      - from: human
+        value: "{text_instruction}"
+      - from: gpt
+        value: "{interleaved_output}"
+    note: "interleaved_output 包含文本 + <image> + <audio> + <video> 的混合"
+    meta:
+      task: interleave
+
+  omni2omni:
+    conversations:
+      - from: human
+        value: "{interleaved_input}"
+      - from: gpt
+        value: "{interleaved_output}"
+    note: "输入和输出都是多模态交织"
+    meta:
+      task: interleave

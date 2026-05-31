@@ -1,0 +1,88 @@
+stage: unified_mt
+description: "Stage 3 — 统一多任务训练. 全模态理解+生成联合, 9 个数据池混合"
+
+checkpoint:
+  init_mode: checkpoint
+  model_name_or_path: outputs/pretrain/gen_pt
+  tokenizer_name_or_path: outputs/pretrain/gen_pt
+
+# ========================================
+# 核心：全模态数据池混合比例
+# ========================================
+pool_mix:
+  text:                    0.05
+  image_understanding:     0.15
+  image_generation:        0.15
+  audio_understanding:     0.08
+  audio_generation:        0.08
+  video_understanding:     0.08
+  video_generation:        0.08
+  av_sync:                 0.08
+  interleaved_omni:        0.25
+
+use_flow_tower: true
+
+loss_weights:
+  ce: 1.0
+  fm: 0.3
+
+tower:
+  decoder_prob: 0.2
+  self_cond_prob: 0.3
+  self_cond_cfg_min: 1.0
+  self_cond_cfg_max: 2.0
+  cfg_label_drop_prob: 0.15
+
+hyperparams:
+  learning_rate: 1.0e-4
+  warmup_steps: 500
+  max_steps: 50000
+  max_seq_length: 16384
+  max_pixels: 4194304
+  min_pixels: 65536
+  per_device_train_batch_size: 2
+  gradient_accumulation_steps: 4
+  gradient_checkpointing: true
+  bf16: true
+  logging_steps: 10
+  save_steps: 5000
+  save_total_limit: 2
+  dataloader_num_workers: 2
+
+output_dir: outputs/pretrain/mt
+deepspeed: configs/deepspeed/zero2.json
+
+# Tower exit 权重 (覆盖 note/tower.yml 默认值)
+tower_exit_weights:
+  world_elf: 0.05
+  semantic_elf: 0.15
+  audio_elf: 0.2
+  video_elf: 0.2
+  understanding_elf: 1.0
+  generative_elf: 0.3
+
+# 评估追踪
+evaluation:
+  benchmarks:
+    image_gen: [FID-30K, CLIP-Score]
+    audio_gen: [FD, CLAP-Score]
+    video_gen: [FVD, CLIP-Score]
+    image_und: [MMBench, MMMU]
+    audio_und: [AudioCaps-BLEU, Clotho-BLEU]
+    video_und: [MSR-VTT-R@1, ActivityNet-CIDEr]
+    text: [MMLU, C-Eval]
+  eval_interval: 5000
+
+note: |
+  这是 Super-Omni 的核心训练阶段.
+  
+  数据策略：
+  - interleaved_omni 占 25%, 确保模型学会交织多模态输出
+  - image_understanding + image_generation 共占 30%, 保住视觉能力
+  - audio/video 各占 ~16%, 逐步建立音视频能力
+  - text 仅占 5%, 防止语言能力退化
+  
+  tower exit 权重：
+  - audio_elf 和 video_elf 各 0.2, 和 note/tower.yml 一致
+  - understanding_elf 保持 1.0 作为主要 CE 梯度来源
+  - generative_elf 降到 0.3, 因为 FM loss 已通过 tower exits 分流

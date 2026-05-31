@@ -1,0 +1,176 @@
+pool_id: audio_generation
+task_types: [t2a, t2s, t2m, audio_inpainting]
+modality: [text, audio]
+description: "音频生成 — Text → Sound Effect / Speech / Music, 模型输出 <audio>"
+
+sub_pools:
+  sound_effect:
+    description: "Text → Sound Effect"
+
+    datasets:
+      - name: AudioX-IFcaps
+        key: aud_gen__audiox_ifcaps
+        source: "$DATA_ROOT/audiox_ifcaps"
+        annotation_file: train.jsonl
+        size: 7_000_000
+        format: t2a_instruction
+        quality_tier: gold
+        sampling_rate: 0.5
+        note: "2026 instruction-following audio caption, 700万+ 样本, 细粒度结构化标注"
+        sub_pool: sound_effect
+
+      - name: WavCaps-T2A
+        key: aud_gen__wavcaps_t2a
+        source: "$DATA_ROOT/wavcaps_t2a"
+        annotation_file: train.jsonl
+        size: 403_050
+        format: t2a
+        quality_tier: silver
+        sampling_rate: 1.0
+        sub_pool: sound_effect
+
+      - name: AudioCaps-T2A
+        key: aud_gen__audiocaps_t2a
+        source: "$DATA_ROOT/audiocaps_t2a"
+        annotation_file: train.jsonl
+        size: 57_188
+        format: t2a
+        quality_tier: gold
+        sampling_rate: 1.0
+        sub_pool: sound_effect
+
+      - name: Clotho-T2A
+        key: aud_gen__clotho_t2a
+        source: "$DATA_ROOT/clotho_t2a"
+        annotation_file: train.jsonl
+        size: 5_929
+        format: t2a
+        quality_tier: gold
+        sampling_rate: 1.0
+        sub_pool: sound_effect
+
+  speech:
+    description: "Text → Speech"
+
+    datasets:
+      - name: Emilia
+        key: aud_gen__emilia
+        source: "$DATA_ROOT/emilia"
+        annotation_file: train.jsonl
+        size: 101_000
+        format: t2s
+        quality_tier: gold
+        sampling_rate: 0.3
+        note: "101K+ 小时，英/中/德/法/日/韩，自然语音"
+        sub_pool: speech
+
+      - name: LibriTTS-R
+        key: aud_gen__libritts_r
+        source: "$DATA_ROOT/libritts_r"
+        annotation_file: train.jsonl
+        size: 585
+        format: t2s
+        quality_tier: gold
+        sampling_rate: 1.0
+        note: "585 小时 24kHz 英文 TTS, 2456 说话人"
+        sub_pool: speech
+
+      - name: GigaSpeech
+        key: aud_gen__gigaspeech
+        source: "$DATA_ROOT/gigaspeech"
+        annotation_file: train.jsonl
+        size: 10_000
+        format: t2s
+        quality_tier: silver
+        sampling_rate: 0.2
+        note: "10000 小时高质量转写英语语音"
+        sub_pool: speech
+
+      - name: AISHELL
+        key: aud_gen__aishell
+        source: "$DATA_ROOT/aishell"
+        annotation_file: train.jsonl
+        size: 170
+        format: t2s
+        quality_tier: gold
+        sampling_rate: 1.0
+        note: "中文语音 170 小时"
+        sub_pool: speech
+
+      - name: WenetSpeech
+        key: aud_gen__wenetspeech
+        source: "$DATA_ROOT/wenetspeech"
+        annotation_file: train.jsonl
+        size: 10_000
+        format: t2s
+        quality_tier: silver
+        sampling_rate: 0.2
+        note: "中文语音 10000+ 小时"
+        sub_pool: speech
+
+  music:
+    description: "Text → Music"
+
+    datasets:
+      - name: MusicCaps
+        key: aud_gen__musiccaps
+        source: "$DATA_ROOT/musiccaps"
+        annotation_file: train.jsonl
+        size: 5_521
+        format: t2m
+        quality_tier: gold
+        sampling_rate: 1.0
+        note: "Google 5521 音乐样本，音乐家写的英文描述"
+        sub_pool: music
+
+      - name: LP-MusicCaps-MC
+        key: aud_gen__lp_musiccaps
+        source: "$DATA_ROOT/lp_musiccaps"
+        annotation_file: train.jsonl
+        size: 500_000
+        format: t2m
+        quality_tier: silver
+        sampling_rate: 0.3
+        note: "更细音乐描述"
+        sub_pool: music
+
+conversion:
+  t2a:
+    conversations:
+      - from: human
+        value: "Generate the sound of: {caption}"
+      - from: gpt
+        value: "<audio>"
+    audio_field: audio
+    meta:
+      task: t2a
+
+  t2a_instruction:
+    conversations:
+      - from: human
+        value: "{instruction}"
+      - from: gpt
+        value: "<audio>"
+    audio_field: audio
+    meta:
+      task: t2a
+
+  t2s:
+    conversations:
+      - from: human
+        value: "Read the following text aloud: {text}"
+      - from: gpt
+        value: "<audio>"
+    audio_field: audio
+    meta:
+      task: t2s
+
+  t2m:
+    conversations:
+      - from: human
+        value: "Compose music based on: {caption}"
+      - from: gpt
+        value: "<audio>"
+    audio_field: audio
+    meta:
+      task: t2m

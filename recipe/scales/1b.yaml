@@ -1,0 +1,50 @@
+scale: 1b
+description: "32L @ 1024d — 研究扩展, 匹配 configs/sizes/1b.yaml"
+
+data_multiplier: 2.5
+step_multiplier: 2.0
+lr_multiplier: 1.58              # sqrt(2.5) ≈ 1.58
+
+max_seq_length: 32768
+effective_batch_size: 16         # 4 GPU × 2 batch × 2 accum
+
+# 1B 需要更多数据, 覆盖部分 pool 的采样率
+pool_sampling:
+  audio_understanding:
+    aud_und__audioset_full: 0.3     # 从 0.1 提升到 0.3
+    aud_und__cambrian: 0.3          # 从 0.1 提升到 0.3
+  video_understanding:
+    vid_und__webvid: 0.2            # 从 0.1 提升到 0.2
+    vid_und__panda70m: 0.1          # 从 0.05 提升到 0.1
+    vid_und__internvid: 0.2         # 从 0.1 提升到 0.2
+  video_generation:
+    vid_gen__panda70m_t2v: 0.1      # 从 0.03 提升到 0.1
+    vid_gen__webvid_t2v: 0.2        # 从 0.08 提升到 0.2
+  av_sync:
+    av_sync__audioset_av: 0.2       # 从 0.05 提升到 0.2
+    av_sync__voxceleb2: 0.5         # 从 0.3 提升到 0.5
+  interleaved_omni:
+    omni__synth_pt: 1.0             # 全量使用合成数据
+
+stage_overrides:
+  world_pt:
+    max_steps: 100000               # 2× base
+  understanding_warmup:
+    max_steps: 400000               # 2× base
+  generation_pt:
+    max_steps: 200000               # 2× base
+  unified_mt:
+    max_steps: 100000               # 2× base
+  unified_sft:
+    max_steps: 40000                # 2× base
+
+gpu_requirements:
+  min_gpus: 4
+  gpu_memory: "80GB (A100/H100)"
+  estimated_training_time:
+    world_pt: "~8 days"
+    understanding_warmup: "~30 days"
+    generation_pt: "~15 days"
+    unified_mt: "~20 days"
+    unified_sft: "~8 days"
+    total: "~81 days on 4× A100"

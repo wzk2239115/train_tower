@@ -1,0 +1,161 @@
+# Super-Omni 端到端训练：当前状态与差距分析
+
+## 总览
+
+| 模态 | 模型侧 | 数据侧 | 训练配置 | 能否训练 |
+|------|--------|--------|----------|----------|
+| 文本 | ✅ | ✅ | ✅ | ✅ |
+| 图像 | ✅ | ✅ | ✅ | ✅ |
+| 音频输入 | ✅ | ✅ 已修复 | ❌ 无数据集 | ⚠️ 缺数据 |
+| 视频输入 | ✅ | ✅ 已修复 | ❌ 无数据集 | ⚠️ 缺数据 |
+| 音频生成 | ✅ (推理侧) | ✅ 已修复 | ❌ 无数据集 | ⚠️ 缺数据 |
+| 视频生成 | ✅ (推理侧) | ✅ 已修复 | ❌ 无数据集 | ⚠️ 缺数据 |
+| 交织生成 | ✅ super_omni_gen | ❌ 无交织数据 | ❌ | ❌ |
+
+## 已完成的工作
+
+### 1. 模型架构（全部就绪）
+
+- **NEOChatModel** (`tower/models/neo_unify/modeling_neo_chat.py`)
+  - `__init__` 新增 `AudioMelDecoder`, `AudioPatchEncoder`, `VideoFrameDecoder`
+  - `audio_latent_proj`: audio patch dim ↔ LLM hidden 的双向投影
+  - `audio_mel_decoder`: mel → waveform vocoder（推理用）
+  - `video_frame_decoder`: latent patches → 视频帧
+  - 所有 6 个特殊 token ID 注册：`<AUDIO_CONTEXT>`, `<audio>`, `</audio>`, `<VIDEO_CONTEXT>`, `<video>`, `</video>`
+
+- **FlowJepaTowerTrainModel** (`tower/unify/flow_tower.py`)
+  - `audio_proj` (80→768): 音频特征投影到 LLM hidden space
+  - `video_proj` (1024→768): 视频特征投影到 LLM hidden space
+  - `_audio_token_mask()` / `_video_token_mask()`: 从 batch 或 input_ids 获取模态 mask
+  - `_extract_audio_clean()` / `_extract_video_clean()`: 投影并返回 clean target
+  - `_inject_audio()` / `_inject_video()`: 将模态 embedding 注入 hidden states
+  - `_prepare_tower_batch()`: 已处理 audio/video FM 采样（z_audio, t_audio, z_video, t_video）
+  - `_compute_exit_loss()`: audio_embed / video_embed latent 走 ELF-FM 路径
+  - `_tower_forward()`: und/gen 双路径均包含 audio/video
+
+- **Tower 出口定义** (`note/tower.yml`)
+  - `audio_elf` @ Layer 11, latent=audio_embed, elf_fm
+  - `video_elf` @ Layer 13, latent=video_embed, elf_fm
+  - 权重: unified_mt 0.2, unified_sft 0.15
+
+- **Tower 出口模块** (`tower/unify/tower_exits.py`)
+  - `ElfFlowTowerExit`: 通用 rectified flow head，对模态无关
+
+### 2. 推理生成（全部就绪）
+
+- **`super_omni_gen()`** (`modeling_neo_chat.py`)
+  - 统一交织生成循环：AR text → 遇到 `<img>`/`<audio>`/`<video>` → FM denoising → 注入 KV cache → 继续 AR
+  - `_denoise_audio()`: mel-patch latent space rectified flow
+  - `_denoise_video()`: per-frame pixel patch rectified flow
+  - `_t2a_predict_v()` / `_t2v_predict_v()`: 音频/视频 velocity prediction
+  - `_append_modality_to_cache()`: 通用模态 token 注入 KV cache
+  - 返回 `{"text": ..., "images": [...], "audios": [...], "videos": [...]}`
+
+### 3. 训练配置
+
+- `TrainConfig` 已有全部字段：audio_n_mels, audio_patch_t, audio_sample_rate, audio_hop_size
+- `config.json` 已配置 audio/video 参数
+
+### 4. Token 注册
+
+- `constants.py`: 6 个新 special token 已注册
+- `build_tokenizer()`: tokenizer 自动扩展词表
+- `build.py`: 从 tokenizer 获取 token ID 并设置到模型
+
+---
+
+## 关键缺口（阻止端到端训练）
+
+### 缺口 1（CRITICAL）: ~~Tokenization 不展开 `<audio>`/`<video>`~~ ✅ 已修复
+
+**文件**: `tower/neo/data/utils.py` → `tokenize_mm_chat_conversations()`
+
+**修复**: 添加了 `num_audio_token_list` 和 `num_video_token_list` 参数，在 image 展开循环后增加了 audio/video 展开逻辑，将 `<audio>` → `<audio><AUDIO_CONTEXT * N></audio>`，`<video>` → `<video><VIDEO_CONTEXT * N></video>`
+
+### 缺口 2（CRITICAL）: ~~数据加载器不处理 audio/video~~ ✅ 已修复
+
+**文件**: `tower/neo/data/data_processor.py` → `_get_item()`
+
+**修复**: 
+- 在 `_get_item()` 中添加了 audio/video 路径解析（支持 `"audio"`/`"audios"`/`"video"`/`"videos"` 字段）
+- 音频文件通过 `audio_file_to_patch_features()` 加载，自动计算 token 数量
+- 视频使用 `num_frames * 256` 作为默认 token 数
+- 自动注入 `<audio>`/`<video>` 标签到首个 human turn（与 image 逻辑对称）
+- 生成 `audio_token_mask` 和 `video_token_mask` 供 collator 使用
+
+**额外修复**: `DataArguments` 添加了 `audio_n_mels`, `audio_patch_bins`, `audio_patch_frames`, `audio_max_patches`, `video_num_frames`, `video_patch_dim` 字段
+
+### 缺口 3（HIGH）: 无 audio/video 训练数据集
+
+**文件**: `configs/train/*.yaml`, `tower/neo/data/__init__.py`
+
+**现状**: 所有配置只引用 image+text 数据集
+**缺失**: 无 audio captioning / video captioning / interleaved multimodal 数据集
+
+**修复**:
+1. 准备 audio/video 训练数据（JSONL 格式，含 audio_path, video_path, audio_values 等字段）
+2. 注册到 data_dict 或 manifest.json
+3. 在 unified_mt.yaml / unified_sft.yaml 中引用
+
+### 缺口 4（LOW）: JEPA 出口不支持 audio/video latent
+
+**文件**: `tower/unify/flow_tower.py` → `_compute_exit_loss()` JEPA 分支
+
+**现状**: JEPA 只支持 vision_embed_und / vision_embed
+**影响**: 当前 tower.yml 中 audio/video 用 elf_fm 类型，不影响训练
+**未来**: 如果需要 JEPA 音频/视频出口，需扩展
+
+---
+
+## 修复优先级
+
+```
+P0 (必做): 缺口 1 + 缺口 2 → ✅ 已修复
+           改了 3 个文件：utils.py, data_processor.py, argument.py
+           audio/video tokenization + data loading 管线贯通
+
+P1 (必做): 缺口 3 → 训练数据
+           需外部准备音频/视频数据集
+           在 configs 中引用
+
+P2 (可选): 缺口 4
+           当前不需要
+```
+
+## 架构优势
+
+修复 P0 + P1 后即可端到端训练，且架构上有以下优势：
+
+1. **统一 flow matching 范式**: 所有模态（image/audio/video/text）的生成 loss 都是 rectified flow velocity MSE，只是 latent space 不同
+2. **MoT 双路径**: und/gen 分裂 FFN 使理解和生成在同一序列中共存
+3. **Tower 多出口**: 不同深度的出口天然匹配不同模态的表征需求（audio 浅层 L11, video L13, image 深层 L25）
+4. **3D 位置编码**: (t, h, w) 天然支持视频帧的时空位置
+5. **推理闭环**: super_omni_gen() 已实现完整的交织生成循环
+
+## 数据格式要求
+
+训练数据 JSONL 样例（audio+video+image+text 交织）：
+
+```json
+{
+  "conversations": [
+    {"from": "human", "value": "请看这张图 <image>，听这段声音 <audio>，然后看视频 <video>，描述你的感受"},
+    {"from": "gpt", "value": "图中是一片海洋，音频是海浪声，视频展现了日出。这让我感到宁静。"}
+  ],
+  "image": "path/to/ocean.jpg",
+  "audio": "path/to/waves.wav",
+  "video": "path/to/sunrise.mp4"
+}
+```
+
+最小可行 audio-only 数据：
+
+```json
+{
+  "conversations": [
+    {"from": "human", "value": "描述这段音频 <audio>"},
+    {"from": "gpt", "value": "这是一段钢琴演奏的古典音乐"}
+  ],
+  "audio": "path/to/piano.wav"
+}
+```
