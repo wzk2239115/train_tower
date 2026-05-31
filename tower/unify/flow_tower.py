@@ -652,16 +652,8 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
             return super().forward(**batch)
         tower_loss = self._tower_forward(batch)
 
-        decoder_prob = float(getattr(self.cfg, "tower_decoder_prob", 0.0))
-        decoder_prob = min(max(decoder_prob, 0.0), 1.0)
-        if decoder_prob <= 0 or not self._has_supervised_tokens(batch):
-            return CausalLMOutputWithPast(loss=tower_loss)
-
-        ce_loss = self._ce_forward(batch)
-        if decoder_prob >= 1.0:
-            return CausalLMOutputWithPast(loss=ce_loss)
-
-        # ELF-style branch mixing: each step samples decoder (CE) vs denoiser (tower FM).
-        if random.random() < decoder_prob:
-            return CausalLMOutputWithPast(loss=ce_loss)
+        if self.cfg.ce_weight > 0 and self._has_supervised_tokens(batch):
+            ce_loss = self._ce_forward(batch)
+            total = tower_loss + self.cfg.ce_weight * ce_loss
+            return CausalLMOutputWithPast(loss=total)
         return CausalLMOutputWithPast(loss=tower_loss)

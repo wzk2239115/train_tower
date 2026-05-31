@@ -27,7 +27,7 @@ exits:
     elf_depth: 2
     description: "L1 semantic — flow on generation-path vision embeddings"
     loss_weights:
-      world_pt: 0.3
+      world_pt: 0.1
       understanding_warmup: 0.0
       generation_pt: 0.1
       unified_mt: 0.15
@@ -40,9 +40,9 @@ exits:
     elf_depth: 2
     description: "L1.5 audio — flow on early-fused audio embeddings"
     loss_weights:
-      world_pt: 0.3
-      understanding_warmup: 0.05
-      generation_pt: 0.2
+      world_pt: 0.0
+      understanding_warmup: 0.0
+      generation_pt: 0.0
       unified_mt: 0.2
       unified_sft: 0.15
 

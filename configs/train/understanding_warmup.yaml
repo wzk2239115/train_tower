@@ -5,6 +5,7 @@ model_config_path: configs/model/sensenova_500m_mot
 tokenizer_name_or_path: configs/tokenizer/qwen3
 model_name_or_path: null
 datasets: "blip3o_long_pt,blip3o_short_pt"
+use_flow_tower: true
 loss_weights:
   ce: 1.0
   fm: 0.0

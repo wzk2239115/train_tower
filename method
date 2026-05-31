@@ -1,0 +1,111 @@
+# 根本解决办法（block-causal attention OOM）
+
+## 0. 一句话结论
+
+OOM 的根因不是 batch / grad_accum / 分辨率，而是 **block-causal mask 把 attention 强制走 `eager` 路径，在 fp32 下物化了 `[B, H, L, L]` 的注意力分数矩阵**。
+根本解决办法：**让带 block 掩码的 attention 走「分块计算、不物化 L×L 分数」的 kernel（SDPA memory-efficient / flash 系），并把这一改动做成 `modeling_qwen3.py` 原生支持**，而不是仅靠 compat 层 monkey-patch。
+
+---
+
+## 1. 根因（精确版）
+
+- `create_block_causal_mask(index)` 生成 dense `(1,1,L,L)` 加性掩码（0 / -inf）。
+- 三条 attention 路径（`forward_und` / `forward_gen` / `forward`）里都写死了一句：
+  > "Block-causal mask ... is only supported on eager"，因此 `attention_mask is not None` 时**强制** `attention_interface = eager_attention_forward`。
+- `eager_attention_forward` 显式执行：
+  - `attn_weights = matmul(Q, Kᵀ) * scale`            → `[B,H,L,L]`
+  - `softmax(attn_weights, dtype=float32)`             → 再来一份 **fp32 `[B,H,L,L]`**
+- L=8192、H=12、B=1：单层单次前向 ≈ **3 GiB** 的 fp32 分数；叠加 26 层 + grad checkpoint 重算 + 权重/优化器/视觉塔 ≈ 单卡 ~77 GiB，再申请 ~3 GiB 即 OOM。
+
+**关键点**：峰值由「单次 packed forward 的 L×L 分数」决定，所以加大 `gradient_accumulation` 完全无效；缩小 micro-batch 也只是线性缓解，治标不治本。
+
+---
+
+## 2. 为什么不能简单换成 flash-varlen
+
+先厘清这个 mask 的真实语义。允许条件是：
+
+```
+allow(i, j) = (index[j] == index[i])  OR  (j <= i)
+```
+
+由于 packing 时 `index`（样本号）沿序列单调不减，可推出：
+**query i 能看到「自己所在样本及其之前所有样本」的全部 token，且在这个可见前缀内是双向（无因果）的**。
+
+- 这不是标准 causal（前缀内无下三角约束）；
+- 也**不是** flash-varlen 的 block-diagonal（样本之间不是互不可见，而是「看得到所有更早样本」）。
+
+因此 **不能** 直接用 `flash_attn_varlen` + `cu_seqlens` 等价替换；flash-attn 也不支持任意 additive mask（只支持 causal / sliding / alibi）。
+→ 既要保持语义、又要省显存，正确选择是 **SDPA 的 memory-efficient / cudnn 后端**：它接受任意 `attn_mask`，但**按 tile 流式计算 softmax，不会物化整张 `[B,H,L,L]` 分数**，峰值从 O(L²) 降到 O(L·tile)。
+
+> 若未来要进一步提速，才考虑写「按 block 边界的 block-sparse flash kernel」，但那是 B3 之后的优化，不是当前 OOM 的根治前提。
+
+---
+
+## 3. 根本解决办法（要做的三件事）
+
+### 3.1 原生改 `modeling_qwen3.py`：block-mask → SDPA（核心）
+
+把三条路径里「有 mask 就强制 eager」的逻辑，改成「有 mask 就走 SDPA（不物化 L×L）」：
+
+- 新增一个 `sdpa_block_attention_forward(module, q, k, v, attn_mask, scaling, dropout)`：
+  - `repeat_kv` 后调用 `F.scaled_dot_product_attention(q, k, v, attn_mask=mask, is_causal=False, scale=scaling)`；
+  - 返回 `attn_output`（不返回 attn_weights）。
+- 三处 `attention_interface = eager_attention_forward` 改为：
+  - `attention_mask is not None` → `sdpa_block_attention_forward`
+  - 否则维持原有 ALL_ATTENTION_FUNCTIONS 分派。
+- 保留 `TOWER_DISABLE_SDPA_BLOCK_ATTN=1` 回退到旧 eager（仅用于对拍/排障）。
+
+**为什么放进 `modeling_qwen3.py` 而不是只留 compat monkey-patch**：
+- 消除「算力平台没加载到 patch 就回退 eager OOM」的部署裂缝（对应文档 B5）；
+- `forward_und / forward_gen / forward` 三条路径行为一致，便于 MoT gen/und 双路径与未来上游合并。
+- compat 层可保留为**幂等的兜底**（若第三方代码未改，仍 monkey-patch；已改则不重复）。
+
+### 3.2 让 mask 本身也别成为大项 + 确保后端选对
+
+- `create_block_causal_mask` 直接产出 **bf16（或 bool）** 掩码，而不是 fp32：fp32 的 `(1,1,8192,8192)` ≈ 256 MB，bf16 ≈ 128 MB，bool ≈ 64 MB；且每步只建一次、按层切片复用。
+- 显式用 `torch.nn.attention.sdpa_kernel([EFFICIENT_ATTENTION, FLASH_ATTENTION, CUDNN_ATTENTION])` 包裹调用，**禁止回落到 MATH 后端**——MATH 后端会重新物化整张 `[B,H,L,L]`，等于白改。启动时打印实际命中的后端，作为「patch 真生效」的证据。
+
+### 3.3 数值等价 + 显存证据（验收口径）
+
+- **数值等价**：固定随机 Q/K/V 与同一 `index`，对比 eager 与 SDPA 路径的 `attn_output`，bf16 下 `max_abs_diff` 应在 ~1e-2 量级、`cosine ≈ 1`（softmax 在 fp32 累加，几乎逐 bit 接近）。
+- **显存证据**（直接回答文档 Q2）：同一输入下分别跑 eager / SDPA，比较
+  `torch.cuda.max_memory_allocated()`：eager 应出现 ~3 GiB×(并发层) 的尖峰，SDPA 应显著下降且不随 H 线性放大 L×L。
+- 落一个独立小脚本（`scripts/` 下）做上述对拍，CI / 上平台前各跑一次。
+
+---
+
+## 4. 配套（非 OOM 根因，但建议一起做）
+
+- **监控（B2）**：在 collator 或 callback 里按 step 打 `packed_seq_length` / `num_vision_tokens` / `peak_vram`，用于区分 OOM 是「配置过大」还是「脏样本超长」。
+- **vram_tune 定位**：保持现状——它只是「参数超过 stable 锚点时降级」的护栏，**不是** OOM 的解；根治后才谈 max profile 的真实吞吐上界（B3）。
+- **DeepSpeed 警告（B4）**：`GradientAccumulationPlugin vs DeepSpeed` 的 grad_accum 不一致是告警非根因，单独对齐即可。
+
+---
+
+## 5. 部署校验（确保根治到达算力平台）
+
+开发机改 → push；算力平台 `git pull` 后：
+
+```bash
+git rev-parse HEAD                                   # 与远程含本修复的 commit 对齐
+grep -n "sdpa_block_attention_forward" tower/unify/attention.py tower/unify/compat.py
+# 启动日志须出现：Block-causal attention: fused SDPA（compat patch），且不应再看到
+# eager_attention_forward → softmax(attn_weights) 处的 OOM 调用栈
+```
+
+判定：**OOM 调用栈不再出现在 `softmax(attn_weights)`，且 `max_memory_allocated` 显著下降** = 根因已解决。
+
+
+根因（精确版）：OOM 不是 batch/grad_accum/分辨率的问题,而是 create_block_causal_mask 生成 (1,1,L,L) 掩码后,三条 attention 路径(forward_und/forward_gen/forward)都写死走 eager_attention_forward,在 fp32 下物化了 [B,H,L,L] 注意力分数(L=8192/H=12 时单层单次 ~3 GiB)。因此加 grad_accum 无效——峰值由单次 packed forward 决定。
+
+关键澄清:我核对了 mask 语义 (index[j]==index[i]) | (j<=i),在 index 单调的 packing 下它等价于「query 能双向看到自己及更早所有样本的前缀」。这既不是 causal、也不是 flash-varlen 的 block-diagonal,且 flash-attn 不支持任意 additive mask——所以不能简单换 flash-varlen,正确路径是 SDPA 的 memory-efficient 后端(按 tile 流式 softmax,不物化 L×L)。
+
+根本解决办法(三件事):
+
+把改动做成 modeling_qwen3.py 原生支持(三条路径有 mask 即走 SDPA),消除「平台没 pull 到 patch 就回退 eager」的部署裂缝,而非只靠 compat monkey-patch;
+mask 用 bf16/bool 而非 fp32,并用 sdpa_kernel 禁止回落 MATH 后端(否则会重新物化 L×L,等于白改),启动打印命中后端;
+验收口径:eager vs SDPA 的数值对拍 + max_memory_allocated 显存证据(直接回答文档 Q2)。
+另外附了监控(B2)、vram_tune 定位、部署校验命令。
+
+需要我接着把这套方案落成代码(改 modeling_qwen3.py 三条路径 + 对拍脚本)吗?现在 compat.py 里已有 SDPA patch,但它是 monkey-patch 且 mask 仍是 fp32、未强制后端,我可以把它升级为上面描述的原生+健壮版本。

@@ -137,14 +137,18 @@ def cmd_train(args: argparse.Namespace) -> int:
     from pathlib import Path
 
     from tower.train.config import load_train_config
+    from tower.train.experiment_profile import load_train_config_from_experiment
     from tower.train.trainer import run_training
 
-    if args.config:
-        cfg = load_train_config(config_path=Path(args.config))
+    experiment = getattr(args, "experiment", None) or getattr(args, "profile", None)
+    if experiment:
+        cfg = load_train_config_from_experiment(experiment, size_preset=args.size)
+    elif args.config:
+        cfg = load_train_config(config_path=Path(args.config), size_preset=args.size)
     elif args.stage:
-        cfg = load_train_config(stage=args.stage)
+        cfg = load_train_config(stage=args.stage, size_preset=args.size)
     else:
-        raise SystemExit("Specify --config or --stage for training")
+        raise SystemExit("Specify --experiment/--profile, --config, or --stage for training")
 
     if args.datasets:
         cfg.datasets = args.datasets
@@ -153,8 +157,36 @@ def cmd_train(args: argparse.Namespace) -> int:
     if args.output_dir:
         cfg.output_dir = args.output_dir
 
-    print(f"Training stage={cfg.stage} datasets={cfg.datasets} -> {cfg.output_dir}")
+    profile_note = f" profile={cfg.experiment_profile}" if cfg.experiment_profile else ""
+    size_note = f" size={cfg.size_preset}" if cfg.size_preset else ""
+    print(
+        f"Training stage={cfg.stage}{profile_note}{size_note} "
+        f"datasets={cfg.datasets} -> {cfg.output_dir}"
+    )
     run_training(cfg)
+    return 0
+
+
+def cmd_experiment_list(_args: argparse.Namespace) -> int:
+    from tower.train.experiment_profile import list_experiment_profiles, summarize_profile
+
+    names = list_experiment_profiles()
+    if not names:
+        print("No experiment profiles in configs/experiments/")
+        return 0
+
+    for name in names:
+        summary = summarize_profile(name)
+        stages = summary["stages"]
+        ds_preview = stages[0]["datasets"] if stages else ""
+        if len(stages) > 1:
+            ds_preview = f"{ds_preview} … (+{len(stages) - 1} stages)"
+        print(
+            f"{summary['name']:20} size={summary['size_preset']:12} "
+            f"steps={summary['max_steps']:>7}  {summary['description']}"
+        )
+        print(f"{'':22} train={summary['train_config']}  out={summary['output_dir']}")
+        print(f"{'':22} datasets: {ds_preview}")
     return 0
 
 
@@ -213,6 +245,13 @@ def build_parser() -> argparse.ArgumentParser:
     train = sub.add_parser("train", help="Train unified NEO/SenseNova model")
     train.add_argument("--config", help="Path to train yaml config")
     train.add_argument(
+        "--experiment",
+        "--profile",
+        dest="experiment",
+        metavar="PROFILE",
+        help="Experiment profile from configs/experiments/ (bundles size + curriculum + datasets)",
+    )
+    train.add_argument(
         "--stage",
         choices=["world_pt", "understanding_warmup", "generation_pt", "unified_mt", "unified_sft"],
         help="Training stage (reads note/train.yml + configs/train/)",
@@ -220,7 +259,18 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--datasets", help="Override dataset_use comma list")
     train.add_argument("--max-steps", type=int, default=None)
     train.add_argument("--output-dir", help="Override output directory")
+    train.add_argument(
+        "--size",
+        dest="size",
+        metavar="PRESET",
+        help="Model size preset from configs/sizes/ (e.g. 500m, 1b, tiny_smoke)",
+    )
     train.set_defaults(func=cmd_train)
+
+    experiment = sub.add_parser("experiment", help="List and inspect experiment profiles")
+    exp_sub = experiment.add_subparsers(dest="experiment_command", required=True)
+    exp_list = exp_sub.add_parser("list", help="List profiles (size, datasets, steps)")
+    exp_list.set_defaults(func=cmd_experiment_list)
 
     viz = sub.add_parser("viz", help="Visualize training data and metrics (terminal)")
     viz.set_defaults(func=cmd_viz)

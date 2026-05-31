@@ -111,13 +111,60 @@ Output: `data/processed/{pt,mt,sft}/*.jsonl` + `data/processed/manifest.json`
 
 **不下载任何预训练权重**（无 Qwen3-Base / SenseNova checkpoint）。仅下载 Qwen 词表文件；模型从 [`configs/model/sensenova_500m_mot/config.json`](configs/model/sensenova_500m_mot/config.json) 随机初始化。
 
-结构对标 SenseNova-U1-8B-MoT（MoT 双路径 + `fm_modules` + `image_gen_indicators`），规模缩至 ~500M（14 层 × hidden 768）。
+结构对标 SenseNova-U1-8B-MoT（MoT 双路径 + `fm_modules` + `image_gen_indicators`），规模缩至 ~500M（26 层 × hidden 768）。
+
+### 推荐：一次训练 super omni（continuous run）
+
+**默认路径**：单个 job 从随机初始化跑完 5 个 curriculum stage，共享一条 backbone + 四个 tower exit，无需 `checkpoint_chain` 或分 stage 续训。
+
+```bash
+chmod +x scripts/train_continuous.sh
+./scripts/train_continuous.sh
+# 等价：
+# torchrun ... -m tower.cli train --config configs/train/continuous.yaml
+```
+
+Curriculum（420k steps）：`world_pt (50k) → understanding_warmup (200k) → generation_pt (100k) → unified_mt (50k) → unified_sft (20k)`。阶段切换时自动更新 `note/tower.yml` 的 tower exit 权重、数据集、freeze、learning rate / loss_weights / CFG 等。
+
+**Experiment profiles**（模型规模 + 数据集 + 曲线配套）：[`configs/experiments/`](configs/experiments/)
+
+```bash
+tower experiment list
+tower train --experiment 500m_continuous          # 或 --profile
+tower viz experiment --profile 500m_continuous    # 按 curriculum stage 分段画 loss 曲线
+```
+
+`tiny_smoke` profile：8L 小模型 + 仅 `blip3o_short_pt` + 100 steps，用于 CI/本地冒烟。
+
+**Resume**：直接重跑同一命令即可；`checkpoint-*` 存在时会从最新步数恢复，curriculum 会按 `global_step` 切到对应 stage 并重新应用 freeze。
+
+**产物**（同一 run 的 super omni 切片，可单独加载各能力）：
+
+```text
+outputs/pretrain/continuous/checkpoint/     # 训练结束时的最终导出
+├── backbone.pt          # 共享 MoT backbone
+├── world_model.pt       # L0 JEPA (world_elf)
+├── semantic_model.pt    # L1 semantic ELF
+├── language_model.pt    # L2 language ELF (understanding_elf)
+└── generator.pt         # L3 pixel flow (generative_elf)
+
+outputs/pretrain/continuous/artifacts/      # 可选：每 stage 结束时的快照（TOWER_EXPORT_STAGE_SNAPSHOTS=1，默认开）
+├── world_pt/checkpoint/...
+├── understanding_warmup/checkpoint/...
+└── ...
+```
+
+Head 文件内为 `{exit_name, state_dict}`；与 `backbone.pt` 组合即可加载 world / semantic / language / generator 子模型。
+
+### 备选：分 stage 流水线
+
+若需分 job 调试或从已有 checkpoint 链接，仍可用 stage 脚本（依赖 `note/train.yml` 的 `checkpoint_chain`）：
 
 ```
 random init (~500M MoT)
         │
         ▼
-  UW (CE, train und path)       ← blip3o PT caption
+  world_pt / UW (CE)            ← blip3o PT caption
         │
         ▼
   Gen PT (FM, T2I flip)         ← blip3o PT → text-to-image
@@ -131,43 +178,23 @@ random init (~500M MoT)
 
 | Stage | Script | Loss |
 |-------|--------|------|
+| world_pt | `scripts/train_tower_world.sh` | Tower JEPA + semantic |
 | UW | `scripts/train_uw.sh` | CE |
 | Gen PT | `scripts/train_gen_pt.sh` | FM |
 | Uni MT | `scripts/train_mt.sh` | **Tower 四探针**（见 tower.yml） |
 | Uni SFT | `scripts/train_sft.sh` | **Tower 四探针**（见 tower.yml） |
 
-Checkpoints: `outputs/pretrain/{uw,gen_pt,mt,sft}`
-
-### 真·一次训练（continuous run）
-
-用单个 job 跑完整 curriculum（`world_pt -> understanding_warmup -> generation_pt -> unified_mt -> unified_sft`），当前版本只切换 `note/tower.yml` 的 tower loss stage，不切数据集和 freeze 策略：
+Checkpoints: `outputs/pretrain/{world_pt,uw,gen_pt,mt,sft}`
 
 ```bash
-chmod +x scripts/train_continuous.sh
-./scripts/train_continuous.sh
-# 等价：
-# torchrun ... -m tower.cli train --config configs/train/continuous.yaml
-```
-
-产物会额外导出到 `outputs/pretrain/continuous/checkpoint/`：
-
-```text
-checkpoint/
-├── backbone.pt
-├── world_model.pt
-├── semantic_model.pt
-├── language_model.pt
-└── generator.pt
+./scripts/train_pretrain.sh
+# or stage-by-stage:
+./scripts/train_uw.sh && ./scripts/train_gen_pt.sh && ./scripts/train_mt.sh && ./scripts/train_sft.sh
 ```
 
 ### Flow-JEPA Tower (multi-exit)
 
-Stacked ELF + JEPA at layers 7 / 15 / 21 / 25 (`note/tower.yml`). Enable with `use_flow_tower: true`.
-
-```bash
-chmod +x scripts/train_tower_world.sh
-./scripts/train_tower_world.sh   # Stage 0: world_pt (JEPA + semantic ELF)
-```
+Stacked ELF + JEPA at layers 7 / 15 / 21 / 25 (`note/tower.yml`). Enable with `use_flow_tower: true`（continuous 配置已默认开启）。
 
 See [`idea.md`](idea.md) for the full distillation-tower design.
 
@@ -177,19 +204,9 @@ See [`idea.md`](idea.md) for the full distillation-tower design.
 MAX_STEPS=10 DATASETS=blip3o_short_pt ./scripts/train_smoke.sh
 ```
 
-### Full pipeline
-
-```bash
-./scripts/train_pretrain.sh
-# or stage-by-stage:
-./scripts/train_uw.sh && ./scripts/train_gen_pt.sh && ./scripts/train_mt.sh && ./scripts/train_sft.sh
-# or single continuous run:
-./scripts/train_continuous.sh
-```
-
 **Single GPU (default):** scripts use `torchrun` and auto-set `TOWER_NO_DEEPSPEED=1` to avoid `mpi4py` / NVML issues. Force DeepSpeed with `USE_DEEPSPEED=1` (multi-GPU recommended).
 
-**Multi GPU:** `NUM_GPUS=8 ./scripts/train_pretrain.sh` — DeepSpeed ZeRO-2 from yaml is enabled automatically.
+**Multi GPU:** `NUM_GPUS=8 ./scripts/train_continuous.sh` — DeepSpeed ZeRO-2 from yaml is enabled automatically.
 
 ### Resume full pipeline after `world_pt_h800`
 
@@ -273,6 +290,7 @@ Override datasets: `--datasets blip3o_short_pt,llava_pt`. Python API: `tower.viz
 
 ## Architecture
 
+- **Model sizes**: Named presets in `configs/sizes/` (`500m`, `1b`, `tiny_smoke`, …) merge into `configs/model/*/config.json` and scale `note/tower.yml` exit depths at build time. Use `size_preset: 500m` in train yaml or `tower train --config … --size 1b`. Omit for legacy `model_config_path` only.
 - **Model**: SenseNova `NEOChatModel` (MoT) via `tower/unify/build.py` + `SenseNovaTrainModel`
 - **Flow-JEPA Tower** (optional): `tower/unify/flow_tower.py` — multi-exit JEPA + stacked ELF; see [`idea.md`](idea.md) and [`note/tower.yml`](note/tower.yml)
 - **Data**: NEO `LazySupervisedDataset` via `tower/unify/backends/neo.py` + packed collator with `image_gen_indicators`
@@ -286,6 +304,7 @@ Override datasets: `--datasets blip3o_short_pt,llava_pt`. Python API: `tower.viz
 | `init_mode` | `scratch` or `checkpoint` |
 | `weight_init` | `random` (no HF weights) for UW |
 | `model_config_path` | Local arch config (`configs/model/sensenova_500m_mot`) |
+| `size_preset` / `model_size` | Named preset under `configs/sizes/` (overrides LLM dims + tower exits) |
 | `tokenizer_name_or_path` | Local Qwen tokenizer dir (`configs/tokenizer/qwen3`) |
 | `loss_weights.ce/fm` | CE and FM loss weights |
 | `task_override` | Force `t2i` for generation pretrain |
@@ -303,6 +322,7 @@ Override datasets: `--datasets blip3o_short_pt,llava_pt`. Python API: `tower.viz
 ```
 train_tower/
 ├── configs/
+│   ├── sizes/                      # model dimension presets (500m, 1b, …)
 │   ├── model/sensenova_500m_mot/   # arch config (no weights)
 │   ├── tokenizer/qwen3/            # vocab only
 │   └── train/                      # stage yaml

@@ -1,0 +1,27 @@
+# ~1B-scale experiment preset (same template dir, wider/deeper LLM).
+name: "1b"
+description: "32L @ 1024d — research scaling sketch"
+model_config_path: configs/model/sensenova_500m_mot
+
+llm:
+  num_hidden_layers: 32
+  hidden_size: 1024
+  intermediate_size: 2816
+  num_attention_heads: 16
+  num_key_value_heads: 4
+  head_dim: 64
+  max_window_layers: 32
+
+vision:
+  hidden_size: 1024
+  llm_hidden_size: 1024
+
+fm_head_dim: 1024
+
+tower:
+  exit_depth_frac:
+    world_elf: 0.28
+    audio_elf: 0.44
+    semantic_elf: 0.60
+    understanding_elf: 0.84
+  stage_shallow_world_pt_frac: 0.308

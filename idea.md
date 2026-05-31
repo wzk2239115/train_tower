@@ -183,6 +183,7 @@ Stage 3  unified_mt / sft — 全塔联合（核心）
 - [x] `note/tower_train.yml` + `scripts/train_tower_world.sh`
 - [x] freeze 策略扩展：`tower/train/freeze.py` 按出口名 freeze
 - [x] MT/SFT 默认开启全塔联合 loss（四探针同时 >0，`use_flow_tower: true`）
+- [x] **一次训练 super omni**：`configs/train/continuous.yaml` 单 job 跑完 5 stage，结束时导出 `backbone.pt` + 四个 head 切片（`world/semantic/language/generator`）；阶段切换时可写 `artifacts/<stage>/` 快照
 
 ### Phase C：ELF 完整技巧
 

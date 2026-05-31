@@ -1,0 +1,18 @@
+# Experiment profile schema (documentation only — not loaded at runtime).
+#
+# Profiles bundle model size + train curriculum + viz defaults for coordinated runs.
+# Select via: tower train --experiment <name>  |  tower viz experiment --profile <name>
+#
+# Fields:
+#   name            — profile id (defaults to filename stem)
+#   description     — one-line summary for `tower experiment list`
+#   size_preset     — configs/sizes/<preset>.yaml (tower + LLM scaling)
+#   train_config    — base yaml (e.g. configs/train/continuous.yaml)
+#   overrides       — top-level TrainConfig fields merged after train_config
+#   curriculum      — full curriculum list (replaces train_config curriculum)
+#   stages          — per-stage specs; converted to curriculum when curriculum omitted:
+#                       datasets: [blip3o_short_pt]  or comma string
+#                       max_steps: 50000
+#   viz:
+#     metrics: [loss, grad_norm, lr]
+#     output_dir: exports/viz/<profile_name>/

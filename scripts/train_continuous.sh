@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# True one-run curriculum training: world_pt -> uw -> gen_pt -> mt -> sft
+# Primary one-shot super omni training: world_pt -> uw -> gen_pt -> mt -> sft (420k steps)
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"

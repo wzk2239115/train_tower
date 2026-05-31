@@ -13,14 +13,7 @@ TRAIN_YML = NOTE_DIR / "train.yml"
 TOWER_TRAIN_YML = NOTE_DIR / "tower_train.yml"
 TOWER_YML = NOTE_DIR / "tower.yml"
 
-# Canonical training stage order (classic + tower world_pt).
-STAGE_ORDER = (
-    "world_pt",
-    "understanding_warmup",
-    "generation_pt",
-    "unified_mt",
-    "unified_sft",
-)
+from tower.train.stage_boundaries import STAGE_ORDER
 
 DATA_STAGE_LABELS = {
     "pt": "Pretrain",
@@ -136,6 +129,39 @@ def load_stage_configs(*, include_tower: bool = True) -> dict[str, StageInfo]:
             task_override=merged.get("task_override"),
         )
     return out
+
+
+def load_continuous_curriculum(*, config_path: Path | None = None) -> list[StageInfo]:
+    """Load step-bounded curriculum phases from configs/train/continuous.yaml."""
+    from tower.train.config import load_train_config
+
+    path = config_path or (PROJECT_ROOT / "configs" / "train" / "continuous.yaml")
+    cfg = load_train_config(config_path=path)
+    phases: list[StageInfo] = []
+    prev_until = -1
+    for item in cfg.curriculum:
+        stage = str(item["stage"])
+        until = int(item["until_step"])
+        step = prev_until + 1
+        settings = cfg.curriculum_data_settings_for_step(step)
+        train_exits, freeze_exits = _load_tower_freeze(stage)
+        phases.append(
+            StageInfo(
+                name=stage,
+                datasets=_parse_datasets(settings.get("datasets")),
+                output_dir=cfg.output_dir,
+                use_flow_tower=cfg.use_flow_tower,
+                loss_weights=dict(settings.get("loss_weights") or {}),
+                tower_exit_weights=_load_tower_exit_weights(stage),
+                tower_train_exits=train_exits,
+                tower_freeze_exits=freeze_exits,
+                learning_rate=settings.get("learning_rate"),
+                max_steps=until - prev_until,
+                task_override=settings.get("task_override"),
+            )
+        )
+        prev_until = until
+    return phases
 
 
 def list_available_datasets() -> list[dict[str, Any]]:

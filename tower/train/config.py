@@ -18,6 +18,14 @@ CURRICULUM_OVERRIDE_KEYS = (
     "gradient_accumulation_steps",
 )
 
+CURRICULUM_TRAIN_OVERRIDE_KEYS = (
+    "tower_decoder_prob",
+    "cfg_label_drop_prob",
+    "tower_self_cond_prob",
+    "tower_self_cond_cfg_min",
+    "tower_self_cond_cfg_max",
+)
+
 
 @dataclass
 class TrainConfig:
@@ -25,11 +33,16 @@ class TrainConfig:
     init_mode: str = "scratch"
     weight_init: str = "random"
     model_config_path: str | None = "configs/model/sensenova_500m_mot"
+    size_preset: str | None = None
+    model_size: str | None = None
+    experiment_profile: str | None = None
     base_model: str | None = None
     model_name_or_path: str | None = None
     llm_model_name_or_path: str | None = None
     tokenizer_name_or_path: str | None = "configs/tokenizer/qwen3"
     datasets: str = "blip3o_short_pt"
+    # When use_flow_tower=true, ce/fm here control the joint CE (and legacy FM) head;
+    # per-exit tower FM/JEPA weights come from note/tower.yml.
     loss_weights: dict[str, float] = field(default_factory=lambda: {"ce": 1.0, "fm": 0.0})
     task_override: str | None = None
     train_buffer: bool = False
@@ -69,9 +82,10 @@ class TrainConfig:
     audio_context_token_id: int = -1
     audio_patch_dim: int = 80
     attn_implementation: str = "sdpa"
-    # Step-based curriculum. Each item requires stage + until_step; optional data keys:
+    # Step-based curriculum. Each item requires stage + until_step; optional overrides:
     # max_seq_length, max_pixels, min_pixels, per_device_train_batch_size,
-    # gradient_accumulation_steps (fall back to top-level TrainConfig when omitted).
+    # gradient_accumulation_steps, datasets, learning_rate, loss_weights, task_override
+    # (fall back to top-level TrainConfig when omitted).
     curriculum: list[dict[str, Any]] = field(default_factory=list)
 
     @property
@@ -111,12 +125,25 @@ class TrainConfig:
             "min_pixels": self.min_pixels,
             "per_device_train_batch_size": self.per_device_train_batch_size,
             "gradient_accumulation_steps": self.gradient_accumulation_steps,
+            "datasets": self.datasets,
+            "learning_rate": self.learning_rate,
+            "loss_weights": dict(self.loss_weights),
+            "task_override": self.task_override,
             "until_step": int(item.get("until_step", self.max_steps)) if item else self.max_steps,
         }
         if self.curriculum:
             for key in CURRICULUM_OVERRIDE_KEYS:
                 if key in item:
                     settings[key] = item[key]
+            for key in ("datasets", "learning_rate", "loss_weights", "task_override"):
+                if key in item:
+                    settings[key] = dict(item[key]) if key == "loss_weights" else item[key]
+            for key in CURRICULUM_TRAIN_OVERRIDE_KEYS:
+                if key in item:
+                    settings[key] = float(item[key])
+        for key in CURRICULUM_TRAIN_OVERRIDE_KEYS:
+            if key not in settings:
+                settings[key] = float(getattr(self, key))
         return settings
 
 
@@ -163,12 +190,19 @@ def validate_pretrain_config(cfg: TrainConfig) -> None:
             raise ValueError("0→1 scratch UW requires tokenizer_name_or_path")
 
 
-def load_train_config(*, config_path: Path | None = None, stage: str | None = None) -> TrainConfig:
+def load_train_config(
+    *,
+    config_path: Path | None = None,
+    stage: str | None = None,
+    size_preset: str | None = None,
+) -> TrainConfig:
+    from tower.train.size_preset import apply_size_preset_to_train_config
+
     if config_path is not None:
         raw = _load_yaml(config_path)
         cfg = TrainConfig(**{k: v for k, v in raw.items() if k in TrainConfig.__dataclass_fields__})
         validate_pretrain_config(cfg)
-        return cfg
+        return apply_size_preset_to_train_config(cfg, cli_size=size_preset)
 
     if stage is None:
         raise ValueError("Provide config_path or stage")
@@ -193,4 +227,4 @@ def load_train_config(*, config_path: Path | None = None, stage: str | None = No
     base.update(stage_cfg)
     cfg = TrainConfig(**{k: v for k, v in base.items() if k in TrainConfig.__dataclass_fields__})
     validate_pretrain_config(cfg)
-    return cfg
+    return apply_size_preset_to_train_config(cfg, cli_size=size_preset)

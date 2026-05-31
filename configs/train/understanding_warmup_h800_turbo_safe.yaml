@@ -4,6 +4,7 @@ weight_init: random
 model_name_or_path: outputs/pretrain/world_pt_h800
 tokenizer_name_or_path: outputs/pretrain/world_pt_h800
 datasets: "blip3o_long_pt,blip3o_short_pt"
+use_flow_tower: true
 loss_weights:
   ce: 1.0
   fm: 0.0

@@ -1,0 +1,14 @@
+name: 500m_continuous
+description: "26L production model — full continuous curriculum, all datasets"
+size_preset: 500m
+train_config: configs/train/continuous.yaml
+
+overrides:
+  output_dir: outputs/pretrain/500m_continuous
+
+# Stage/dataset pairing documented in configs/train/continuous.yaml curriculum.
+# Use `tower experiment list` to inspect resolved stage boundaries.
+
+viz:
+  metrics: [loss, grad_norm, lr]
+  output_dir: exports/viz/500m_continuous

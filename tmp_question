@@ -1,0 +1,205 @@
+# train_tower · H800 训练显存 / 吞吐优化 — 问题与瓶颈（请专家协助）
+
+> 背景：8× H800 80GB，续跑 `world_pt_h800` 之后的 pipeline（`scripts/h100_resume_pipeline.sh`）。  
+> **协作流程**：在**开发机**（本仓库，即当前改代码的机器）上修改 → 人工 **commit & push** 到 Git 远程 → **算力平台**（如 `/home/jovyan/h800fast/wangzekai/train_tower`）**`git pull`** 同一分支后再跑训练。算力平台训练前用 `git rev-parse HEAD` 核对已与远程对齐、且含本次修复的 commit。
+
+---
+
+## 1. 目标
+
+| 项 | 内容 |
+|----|------|
+| 硬件 | 8× NVIDIA H800，单卡 79.18 GiB |
+| 启动命令 | `H800_PROFILE=max MAX_STEPS=30 ./scripts/h100_resume_pipeline.sh` |
+| 期望 | 在 **stable 能跑通** 的前提下，用 `max` profile 提高 **全局 batch / 吞吐**（目标 global batch ≈ 160） |
+| 阶段 | 当前卡在 **Stage 1 `understanding_warmup`**（`configs/train/understanding_warmup_h800_max.yaml`） |
+
+---
+
+## 2. 现象
+
+### 2.1 早期：进度条卡在 `0/30`
+
+- 日志已到 `0%|...| 0/30`，长时间无 step 更新。
+- 曾定位：`TOWER_DATALOADER_PREFLIGHT_STEPS=20` 时 **仅 rank0 做 preflight**，其它 rank 先进入 `trainer.train()` 可能在 NCCL/DeepSpeed 处等待（已改：全 rank preflight + barrier）。
+
+### 2.2 核心：第一步训练 CUDA OOM
+
+```
+torch.OutOfMemoryError: Tried to allocate ~2.7–2.9 GiB
+GPU has ~2.0 GiB free, PyTorch already ~74–75 GiB allocated
+```
+
+**调用栈（稳定复现）**：
+
+```
+tower/unify/train_model.py::_ce_forward
+  → language_model(..., attention_mask={"full_attention": create_block_causal_mask(...)})
+  → tower/models/neo_unify/modeling_qwen3.py::forward_und
+  → eager_attention_forward
+  → nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32)   # OOM 点
+```
+
+- `H800_PROFILE=stable`（`understanding_warmup_h800_resume.yaml`）：**可跑**。
+- `H800_PROFILE=max`：即使用 **与 stable 相同的 micro-batch / max_pixels**（经 `vram_tune` 钳制后），在**未部署 SDPA patch 的算力平台代码**上仍 OOM。
+
+### 2.3 误导性日志（非阻塞）
+
+- `fm_modules.fm_head.* | MISMATCH`（ckpt 1536 vs model 4096）：SenseNova 默认 `fm_head` 中间维写死 4096；UW 阶段 `fm: 0.0`，**与 OOM 无关**。
+- `Gradient accumulation steps mismatch: Plugin 1 vs DeepSpeed 2`：警告，非根因。
+
+---
+
+## 3. 根因分析（我们认为的本质问题）
+
+### 3.1 数据：packed sequence，不是普通 micro-batch
+
+- NEO `FlattenedDataCollatorForSupervisedDataset`（`data_flatten: true`）将 **`per_device_train_batch_size` 条样本拼成一条序列**，长度上限 `max_seq_length`（8192）。
+- LLM forward 时 `input_ids` 常为 `[1, L]`，**L 接近 8192 时 attention 显存 ~ O(L²)**。
+
+### 3.2 模型：block-causal 强制 eager，物化 L×L
+
+- `create_block_causal_mask(index)` 生成 `(1, 1, L, L)` dense mask（`modeling_qwen3.py`）。
+- `Qwen3Attention.forward_und` 在 `attention_mask is not None` 时**写死**使用 `eager_attention_forward`（注释："only supported on eager"）。
+- `eager_attention_forward` 显式 `matmul` + **`softmax(..., dtype=float32)`**，物化 `attn_weights` 形状 `[B, H, L, L]`：
+  - 粗算：L=8192, H=12, B=1 → fp32 权重约 **3 GiB / 层 / 次前向**；
+  - 26 层 + gradient checkpoint 重算 + 权重/优化器/视觉塔 → 单卡 **~77 GiB**，再申请 **~3 GiB** 即 OOM。
+
+### 3.3 配置误区
+
+| 误解 | 事实 |
+|------|------|
+| 加大 `gradient_accumulation` 可省显存 | **否**。每步 forward 峰值仍由 **单次 packed forward** 决定。 |
+| `per_device_train_batch_size` = Transformer batch | **否**。在 flatten 下 = **pack 样本条数**，影响序列长度与视觉 token 数。 |
+| `max` 只比 stable 大一点 batch 就能提速 | 同时加大 pack + `max_pixels`（6M/8M）→ 峰值显存 **~1.7×+**，80GB 不够。 |
+| stable 显存占用 25% 说明还有大量余量 | stable 在 80GB 上已接近可用上限；**不能**用「加 batch、关 grad ckpt、加分辨率」的 naive max。 |
+
+---
+
+## 4. 已做优化（开发机已改，需 push 后算力平台 pull）
+
+### 4.1 本质修复：block-causal → fused SDPA（`tower/unify/compat.py`）
+
+- 在 `apply_sensenova_transformers_compat()` 中 monkey-patch `eager_attention_forward`：
+  - 有 `attention_mask` 时走 `sdpa_block_attention_forward`（`F.scaled_dot_product_attention`，**不返回 L×L weights**）。
+- 启动时应打印：
+  ```
+  Patched block-causal attention: eager L×L materialization → fused SDPA
+  ```
+- 回退：`TOWER_DISABLE_SDPA_BLOCK_ATTN=1`（会回到易 OOM 的 eager 路径）。
+
+**请专家验证**：SDPA 路径与 eager 在 block-causal mask 下的 **数值等价性**、以及 long-seq（L=8192）下是否仍走 memory-efficient kernel（或仍隐式分配大 mask tensor `(1,1,L,L)`）。
+
+### 4.2 辅助：显存护栏（`tower/train/vram_tune.py`）
+
+- `H800_PROFILE=max` 或 `TOWER_H800_VRAM_TUNE=1` 时：
+  - 将 pack 条数 / `max_pixels` / `max_seq_length` 钳到 **stable 锚点**（UW: pack=8, 4M pixels, seq=8192, grad_ckpt=on）；
+  - 用 `TOWER_TARGET_GLOBAL_BATCH=160` 提高 **`gradient_accumulation_steps`**（例如 8×8×3）。
+- **不能替代 SDPA patch**；仅在「参数组合超过锚点」时降级。
+
+### 4.3 其它
+
+- `tower/train/trainer.py`：多卡 dataloader preflight 同步、`[train_phase]` 诊断日志。
+- `scripts/h100_resume_pipeline.sh`：`max` 默认 `TOWER_H800_VRAM_TUNE=1`、`TOWER_TARGET_GLOBAL_BATCH=160`。
+- `README.md`：开发机 / 算力平台 Git 协作说明、H800 显存章节。
+
+---
+
+## 5. 当前瓶颈（希望专家解决的方向）
+
+### B1. 【最高优先级】Block-causal attention 的正确高效实现
+
+- **现状**：依赖 compat 层 SDPA + dense `(1,1,L,L)` additive mask；mask 本身在 L=8192 时也可能占 **~256MB+**，且不确定 PyTorch 是否对所有 backend 都融合、不物化 attention matrix。
+- **理想**：
+  - 与 SenseNova/NEO 语义一致的 **block-causal**（按 `data_index` 分块，块内因果/块间规则见 `create_block_causal_mask`）；
+  - 使用 **FlashAttention-2 varlen** / **block-sparse** / **xformers** 等，避免 O(L²) 显存与 O(L²) mask 存储；
+  - 在 `modeling_qwen3.py` 原生支持，而非仅 monkey-patch（便于上游合并与 MoT gen/und 双路径一致）。
+- **开放问题**：
+  - `forward_und` / `forward`（混合 und+gen indicators）三条路径是否都要改？
+  - MoT 的 t/h/w 三分支 RoPE + concat 后的 Q/K 维是否与 flash 接口兼容？
+
+### B2. Packed 数据与显存模型的耦合
+
+- 全局吞吐受 **pack 条数 × 平均样本长度** 约束（`batch × avg_len ≤ max_seq_length`），但峰值由 **worst-case packed L** 决定。
+- 缺少 **按 step 记录 packed_seq_length / num_images** 的监控，难以区分 OOM 是「配置」还是「脏样本」。
+- **建议**：collator 或 callback 打 log：`packed_seq_length`, `num_vision_tokens`, `peak_vram_score`。
+
+### B3. `max` profile 的真实吞吐上界
+
+- 在 B1 解决后，才能在 80GB 上安全尝试：
+  - 更大 pack 条数、6M/8M `max_pixels`、或略增 micro-batch；
+  - 或保持 stable 峰值、仅提高 global batch（grad_accum）—— wall-clock 可能不如真增大 micro-batch。
+- 需要 **profiler 证据**（torch profiler / mem_viz）对比 stable vs max（SDPA on）。
+
+### B4. 多卡与 DeepSpeed 的边角
+
+- `GradientAccumulationPlugin` vs DeepSpeed `gradient_accumulation_steps` 不一致警告。
+- preflight / 首 step 与 ZeRO-2 初始化顺序是否还有 hang 风险（已加 barrier，未在算力平台大规模验证）。
+
+### B5. 部署与验证 gap
+
+- 开发机 push 与算力平台 pull 之间可能有 **滞后**；算力平台若未 pull 到含 patch 的 commit，仍会走旧 eager 路径 OOM。专家改代码后请以算力平台 **`git rev-parse HEAD`** 与远程一致为准，并用下节 **自检命令** 确认 patch 已生效。
+
+---
+
+## 6. 关键文件索引
+
+| 路径 | 说明 |
+|------|------|
+| `tower/unify/backends/sensenova.py` | 唯一 `tower.models.neo_unify` 导入边界 |
+| `tower/unify/attention.py` | `create_block_causal_mask`, `sdpa_block_attention_forward` |
+| `tower/unify/train_model.py` | `_ce_forward` 构造 block mask |
+| `tower/unify/backends/neo.py` | NEO 数据/collation（经 `data_processor`） |
+| `tower/unify/compat.py` | **SDPA patch（运行时 monkey-patch）** |
+| `tower/train/vram_tune.py` | stable 锚点 + grad_accum 重平衡 |
+| `configs/train/understanding_warmup_h800_{resume,max}.yaml` | stable vs max 配置 |
+| `scripts/h100_resume_pipeline.sh` | 8 卡续训入口 |
+
+---
+
+## 7. 复现与自检（算力平台）
+
+```bash
+# 1) 算力平台先 git pull，确认含 compat patch
+git pull
+git rev-parse HEAD
+grep -n "sdpa_block_attention_forward" tower/unify/compat.py
+
+# 2) 短跑 UW（跳过 preflight 便于排查）
+TOWER_DATALOADER_PREFLIGHT_STEPS=0 H800_PROFILE=max MAX_STEPS=30 ./scripts/h100_resume_pipeline.sh
+
+# 3) 日志必须出现（否则 patch 未生效）：
+#    Patched block-causal attention: eager L×L materialization → fused SDPA
+#    [vram_tune] ...（若 profile=max）
+
+# 4) OOM 若仍在 eager_attention_forward → softmax(attn_weights)，说明未用上 patch
+```
+
+**stable 对照**：
+
+```bash
+TOWER_DATALOADER_PREFLIGHT_STEPS=0 H800_PROFILE=stable MAX_STEPS=30 ./scripts/h100_resume_pipeline.sh
+```
+
+---
+
+## 8. 请专家优先回答的问题
+
+1. Block-causal（按 sample index 分块）在 **L=8192、12 heads、bf16** 下，推荐哪种 attention 实现（flash-varlen、自定义 kernel、改进 mask 表示）？能否给出改 `modeling_qwen3.py` 的最小 PR 思路？
+2. 当前 `sdpa_block_attention_forward` + dense `(1,1,L,L)` mask 是否 **仍会在内部物化 L×L** 或等价显存？如何用实验证伪（例如 `torch.cuda.max_memory_allocated()` 对比 eager vs SDPA）？
+3. 在 **不改变训练语义** 的前提下，80GB×8 上 UW 阶段的 **理论最大 pack 条数 / max_pixels** 应如何估算？
+4. `gradient_accumulation` 与 DeepSpeed ZeRO-2 混用时，是否有已知的额外显存峰值（相对单 micro-step）？
+5. 除 attention 外，500M MoT + 视觉塔 + packed 8192 是否还有其它已知大项（例如 vision patch 数、`max_pixels=8M` 时 vit 激活）？
+
+---
+
+## 9. 环境摘要
+
+- Model：~500M SenseNova MoT（`configs/model/sensenova_500m_mot`），checkpoint init from `outputs/pretrain/world_pt_h800`
+- LLM：26 layers, hidden 768, Qwen3 MoT layout（t/h/w 分支 attention）
+- Training：DeepSpeed ZeRO-2（`configs/deepspeed/zero2.json`），bf16，8× torchrun
+- UW loss：`ce:1, fm:0`，`max_seq_length:8192`，stable: pack=8, 4M pixels, grad_ckpt on
+
+---
+
+*文档生成目的：供外部专家快速接手；开发机改代码并 push 后，算力平台 `git pull` 再测。*

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
+from transformers.utils import logging
 
 from tower.train.config import TrainConfig
 from tower.train.curriculum import CurriculumRuntime
@@ -13,6 +14,8 @@ from tower.train.packed_batch_monitor import attach_packed_batch_stats
 from tower.train.tasks import flip_to_t2i, sample_task
 from tower.train.vision_batch import reconcile_vision_inputs
 from tower.io.audio import audio_file_to_patch_features
+
+logger = logging.get_logger(__name__)
 
 
 class UnifiedTrainDataset:
@@ -84,6 +87,23 @@ class UnifiedTrainDataset:
         feats = audio_file_to_patch_features(p)
         self._audio_cache[cache_key] = feats
         return feats
+
+
+def rebuild_unified_dataset_base(
+    unified: UnifiedTrainDataset,
+    *,
+    tokenizer,
+    data_args,
+    datasets: str,
+) -> None:
+    """Reload LazySupervisedDataset when curriculum switches datasets."""
+    from tower.unify.backends import import_lazy_supervised_dataset
+
+    LazySupervisedDataset = import_lazy_supervised_dataset()
+    data_args.dataset_use = datasets.strip()
+    unified._base = LazySupervisedDataset(tokenizer, data_args=data_args)
+    unified._audio_cache.clear()
+    logger.info("Rebuilt train dataset %s (%s samples)", datasets, len(unified))
 
 
 def make_unified_data_module(tokenizer, data_args, training_args, cfg: TrainConfig):

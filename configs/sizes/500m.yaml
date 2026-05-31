@@ -1,0 +1,27 @@
+# Reference ~500M scratch MoT (matches configs/model/sensenova_500m_mot + note/tower.yml).
+name: "500m"
+description: "26L Qwen3 backbone @ 768d — production default"
+model_config_path: configs/model/sensenova_500m_mot
+
+llm:
+  num_hidden_layers: 26
+  hidden_size: 768
+  intermediate_size: 2048
+  num_attention_heads: 12
+  num_key_value_heads: 4
+  head_dim: 64
+  max_window_layers: 26
+
+vision:
+  hidden_size: 768
+  llm_hidden_size: 768
+
+fm_head_dim: 768
+
+tower:
+  exit_depth_frac:
+    world_elf: 0.28
+    audio_elf: 0.44
+    semantic_elf: 0.60
+    understanding_elf: 0.84
+  stage_shallow_world_pt_frac: 0.308

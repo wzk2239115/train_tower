@@ -1,0 +1,43 @@
+name: tiny_smoke
+description: "8L smoke test — blip3o_short_pt only, 100 steps, low pixels"
+size_preset: tiny_smoke
+train_config: configs/train/continuous.yaml
+
+overrides:
+  max_steps: 100
+  max_pixels: 262144
+  min_pixels: 12544
+  max_seq_length: 2048
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 1
+  output_dir: outputs/smoke/tiny_smoke
+  save_steps: 50
+  logging_steps: 5
+
+curriculum:
+  - stage: world_pt
+    until_step: 19
+    datasets: blip3o_short_pt
+    max_pixels: 262144
+    loss_weights: {ce: 0.0, fm: 0.0}
+  - stage: understanding_warmup
+    until_step: 39
+    datasets: blip3o_short_pt
+    loss_weights: {ce: 1.0, fm: 0.0}
+  - stage: generation_pt
+    until_step: 59
+    datasets: blip3o_short_pt
+    task_override: t2i
+    loss_weights: {ce: 0.0, fm: 0.0}
+  - stage: unified_mt
+    until_step: 79
+    datasets: blip3o_short_pt
+    loss_weights: {ce: 1.0, fm: 0.0}
+  - stage: unified_sft
+    until_step: 99
+    datasets: blip3o_short_pt
+    loss_weights: {ce: 1.0, fm: 0.0}
+
+viz:
+  metrics: [loss, grad_norm]
+  output_dir: exports/viz/tiny_smoke

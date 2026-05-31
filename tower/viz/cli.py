@@ -15,6 +15,7 @@ matplotlib.use("Agg")  # headless server: no GUI backend
 from tower.config import PROJECT_ROOT
 from tower.viz.plots import (
     plot_modality_breakdown,
+    plot_per_stage_training_curves,
     plot_resolution_histogram,
     plot_role_distribution,
     plot_sample_grid,
@@ -281,6 +282,64 @@ def cmd_compare(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_experiment(args: argparse.Namespace) -> int:
+    import matplotlib.pyplot as plt
+
+    from tower.train.experiment_profile import (
+        load_experiment_profile,
+        load_train_config_from_experiment,
+    )
+    from tower.train.stage_boundaries import resolve_stage_boundaries
+    from tower.viz.training_metrics import load_training_run
+
+    profile = load_experiment_profile(args.profile)
+    cfg = load_train_config_from_experiment(args.profile)
+    boundaries = resolve_stage_boundaries(cfg)
+
+    run_dir = Path(args.run_dir) if args.run_dir else Path(cfg.output_dir)
+    if not run_dir.is_absolute():
+        run_dir = PROJECT_ROOT / run_dir
+
+    try:
+        run = load_training_run(run_dir)
+    except FileNotFoundError as exc:
+        print(f"{exc}", file=sys.stderr)
+        print(f"Train first: tower train --experiment {args.profile}", file=sys.stderr)
+        return 1
+
+    out_dir = _resolve_out_dir(args.out_dir or str(profile.viz_output_dir))
+    metrics = [args.metric] if args.metric else profile.viz_metrics
+
+    print(f"Profile: {profile.name} ({profile.description})")
+    print(f"Run: {run.path}  global_step={run.global_step}")
+    print("Stage boundaries:")
+    for b in boundaries:
+        print(
+            f"  {b.stage:22} steps {b.start_step:>7}–{b.end_step:<7} "
+            f"({b.step_count:>6} steps)  datasets={b.datasets}"
+        )
+
+    saved: list[Path] = []
+    for metric in metrics:
+        fig = plot_per_stage_training_curves(
+            run,
+            boundaries,
+            metric=metric,
+            title=f"{profile.name} — {metric}",
+        )
+        path = _save_figure(fig, out_dir=out_dir, name=f"{profile.name}_{metric}_per_stage")
+        saved.append(path)
+        print(f"Saved: {path}")
+
+        fig2 = plot_training_curves([run], metric=metric, title=f"{profile.name} — {metric} (full run)")
+        path2 = _save_figure(fig2, out_dir=out_dir, name=f"{profile.name}_{metric}_full")
+        saved.append(path2)
+        print(f"Saved: {path2}")
+
+    plt.close("all")
+    return 0 if saved else 1
+
+
 def cmd_curves(args: argparse.Namespace) -> int:
     import matplotlib.pyplot as plt
 
@@ -375,6 +434,28 @@ def build_viz_parser() -> argparse.ArgumentParser:
     p.add_argument("--metric", choices=["loss", "grad_norm", "lr"], default="loss")
     p.add_argument("--outputs-dir", default=None, help="Root to search (default: outputs/)")
     p.set_defaults(func=cmd_curves)
+
+    p = sub.add_parser(
+        "experiment",
+        help="Per-stage training curves for an experiment profile",
+    )
+    p.add_argument(
+        "--profile",
+        required=True,
+        help="Experiment profile name (configs/experiments/)",
+    )
+    p.add_argument(
+        "--run-dir",
+        default=None,
+        help="Training output dir (default: profile output_dir)",
+    )
+    p.add_argument(
+        "--metric",
+        choices=["loss", "grad_norm", "lr", "tower_loss", "ce_loss"],
+        default=None,
+        help="Single metric (default: all from profile viz.metrics)",
+    )
+    p.set_defaults(func=cmd_experiment)
 
     p = sub.add_parser("export", help="Export stage dataset selections to YAML")
     p.add_argument("--output", default=None, help=f"Output path (default: {DEFAULT_EXPORT_PATH})")

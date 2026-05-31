@@ -189,9 +189,14 @@ def _run_dataloader_preflight(trainer: Trainer, steps: int) -> None:
 def run_training(cfg: TrainConfig) -> None:
     inject_data_dict()
 
+    from tower.train.size_preset import apply_size_preset_to_train_config, assert_model_tower_layer_consistency
     from tower.unify.backends import import_train_arguments
 
     DataArguments, TrainingArguments = import_train_arguments()
+
+    cfg = apply_size_preset_to_train_config(cfg)
+    if cfg.size_preset:
+        assert_model_tower_layer_consistency(cfg)
 
     cfg = apply_h800_vram_tune(cfg)
 
@@ -289,9 +294,12 @@ def run_training(cfg: TrainConfig) -> None:
     if training_args.gradient_checkpointing:
         model.gradient_checkpointing_enable()
 
-    apply_stage_freeze(model.model, cfg.stage)
+    apply_stage_freeze(model.model, cfg.curriculum_stage_for_step(0) if cfg.curriculum else cfg.stage)
     if cfg.use_flow_tower and isinstance(model, FlowJepaTowerTrainModel):
-        apply_tower_exit_freeze(model, cfg.stage)
+        apply_tower_exit_freeze(
+            model,
+            cfg.curriculum_stage_for_step(0) if cfg.curriculum else cfg.stage,
+        )
 
     data_module = make_unified_data_module(
         tokenizer=tokenizer,
@@ -312,6 +320,7 @@ def run_training(cfg: TrainConfig) -> None:
                 data_args=data_args,
                 training_args=training_args,
                 tokenizer=tokenizer,
+                train_dataset=data_module["train_dataset"],
             )
         )
         logger.info("Length/resolution curriculum enabled with %s phases", len(cfg.curriculum))

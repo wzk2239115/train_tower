@@ -12,6 +12,7 @@ from PIL import Image
 
 from tower.schema import UnifiedSample
 from tower.viz.data_stats import DatasetStats, ModalityBreakdown, StageDataSummary
+from tower.train.stage_boundaries import StageBoundary
 from tower.viz.training_metrics import TrainingRun
 
 
@@ -142,6 +143,18 @@ def plot_stage_comparison(
     return fig
 
 
+def _metric_ylabel(metric: str) -> str:
+    labels = {
+        "loss": "Loss",
+        "grad_norm": "Grad norm",
+        "lr": "Learning rate",
+        "learning_rate": "Learning rate",
+        "tower_loss": "Tower loss",
+        "ce_loss": "CE loss",
+    }
+    return labels.get(metric, metric)
+
+
 def plot_training_curves(
     runs: list[TrainingRun],
     *,
@@ -160,16 +173,7 @@ def plot_training_curves(
         return fig
 
     for run in runs:
-        if metric == "grad_norm":
-            curve = run.grad_norm_curve
-            ylabel = "Grad norm"
-        elif metric == "lr":
-            curve = run.lr_curve
-            ylabel = "Learning rate"
-        else:
-            curve = run.loss_curve
-            ylabel = "Loss"
-
+        curve = run.metric_curve(metric)
         if not curve:
             continue
         steps, values = zip(*curve)
@@ -177,9 +181,46 @@ def plot_training_curves(
         ax.plot(steps, values, marker="o", markersize=3, label=label)
 
     ax.set_xlabel("Step")
-    ax.set_ylabel(ylabel)
+    ax.set_ylabel(_metric_ylabel(metric))
     ax.set_title(title or f"Training {metric}")
     ax.legend(loc="best", fontsize=9)
+    fig.tight_layout()
+    return fig
+
+
+def plot_per_stage_training_curves(
+    run: TrainingRun,
+    boundaries: list[StageBoundary],
+    *,
+    metric: str = "loss",
+    title: str | None = None,
+) -> Figure:
+    """Plot one metric with per-stage subplots aligned to curriculum boundaries."""
+    _setup_style()
+    n = max(len(boundaries), 1)
+    fig, axes = plt.subplots(1, n, figsize=(4 * n, 4), squeeze=False)
+    axes_flat = axes[0]
+
+    if not boundaries:
+        axes_flat[0].text(0.5, 0.5, "No stage boundaries", ha="center", va="center")
+        return fig
+
+    for ax, boundary in zip(axes_flat, boundaries):
+        sliced = TrainingRun(
+            name=f"{run.name}:{boundary.stage}",
+            path=run.path,
+            stage=boundary.stage,
+            log_history=run.slice_by_step_range(boundary.start_step, boundary.end_step),
+        )
+        curve = sliced.metric_curve(metric)
+        if curve:
+            steps, values = zip(*curve)
+            ax.plot(steps, values, marker="o", markersize=3, color="#4C72B0")
+        ax.set_title(f"{boundary.stage}\nsteps {boundary.start_step}–{boundary.end_step}")
+        ax.set_xlabel("Global step")
+        ax.set_ylabel(_metric_ylabel(metric))
+
+    fig.suptitle(title or f"{run.name} — {metric} per stage", fontsize=12)
     fig.tight_layout()
     return fig
 

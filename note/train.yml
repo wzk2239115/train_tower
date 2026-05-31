@@ -18,6 +18,7 @@ stages:
   understanding_warmup:
     init_mode: scratch
     weight_init: random
+    use_flow_tower: true
     datasets: "blip3o_long_pt,blip3o_short_pt"
     loss_weights:
       ce: 1.0
@@ -81,6 +82,6 @@ stages:
     tower_self_cond_cfg_min: 1.0
     tower_self_cond_cfg_max: 1.5
     learning_rate: 1.2e-4
-    max_steps: 4500
+    max_steps: 20000
     output_dir: outputs/pretrain/sft
     deepspeed: configs/deepspeed/zero2.json

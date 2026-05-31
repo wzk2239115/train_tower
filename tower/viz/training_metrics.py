@@ -19,29 +19,37 @@ class TrainingRun:
     log_history: list[dict[str, Any]] = field(default_factory=list)
     config: dict[str, Any] = field(default_factory=dict)
 
-    @property
-    def loss_curve(self) -> list[tuple[int, float]]:
+    def metric_curve(self, metric: str) -> list[tuple[int, float]]:
+        key_map = {"lr": "learning_rate", "grad_norm": "grad_norm", "loss": "loss"}
+        key = key_map.get(metric, metric)
         points: list[tuple[int, float]] = []
         for entry in self.log_history:
-            if "loss" in entry and "step" in entry:
-                points.append((int(entry["step"]), float(entry["loss"])))
+            if key in entry and "step" in entry:
+                points.append((int(entry["step"]), float(entry[key])))
         return points
+
+    @property
+    def loss_curve(self) -> list[tuple[int, float]]:
+        return self.metric_curve("loss")
 
     @property
     def grad_norm_curve(self) -> list[tuple[int, float]]:
-        points: list[tuple[int, float]] = []
-        for entry in self.log_history:
-            if "grad_norm" in entry and "step" in entry:
-                points.append((int(entry["step"]), float(entry["grad_norm"])))
-        return points
+        return self.metric_curve("grad_norm")
 
     @property
     def lr_curve(self) -> list[tuple[int, float]]:
-        points: list[tuple[int, float]] = []
-        for entry in self.log_history:
-            if "learning_rate" in entry and "step" in entry:
-                points.append((int(entry["step"]), float(entry["learning_rate"])))
-        return points
+        return self.metric_curve("lr")
+
+    def slice_by_step_range(
+        self,
+        start_step: int,
+        end_step: int,
+    ) -> list[dict[str, Any]]:
+        return [
+            entry
+            for entry in self.log_history
+            if "step" in entry and start_step <= int(entry["step"]) <= end_step
+        ]
 
 
 def _infer_stage(name: str, config: dict[str, Any]) -> str | None:

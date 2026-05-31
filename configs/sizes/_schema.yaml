@@ -1,0 +1,24 @@
+# Size preset schema (documentation only — not loaded at runtime).
+#
+# Named presets live in this directory as *.yaml (e.g. 500m.yaml, tiny_smoke.yaml).
+# TrainConfig.size_preset / model_size / CLI --size selects a preset.
+#
+# Each preset may override:
+#   model_config_path   — base HF-style config.json directory (default: sensenova_500m_mot)
+#   llm.*               — merged into config.json llm_config
+#   vision.*            — merged into config.json vision_config
+#   fm_head_dim         — top-level MoT head width (usually = hidden_size)
+#
+# Tower (note/tower.yml) fields derived at apply time:
+#   num_hidden_layers, hidden_size — from llm.*
+#   exits.*.after_layer — scaled from exit_depth_frac × (L - 1), rounded;
+#                         generative_elf is always L - 1 (last block index).
+#   stage_shallow_train_layers.world_pt — round(stage_shallow_world_pt_frac × L)
+#
+# Default exit depth fractions (500m / 26L reference):
+#   world_elf: 0.28 → layer 7
+#   audio_elf: 0.44 → layer 11
+#   semantic_elf: 0.60 → layer 15
+#   understanding_elf: 0.84 → layer 21
+#   generative_elf: (L - 1) → layer 25
+#   world_pt shallow: 0.308 × L → 8 trainable LLM layers

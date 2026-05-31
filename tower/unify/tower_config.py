@@ -10,6 +10,17 @@ from tower.config import PROJECT_ROOT
 
 TOWER_YML = PROJECT_ROOT / "note" / "tower.yml"
 
+_active_tower_overlay: dict[str, Any] | None = None
+
+
+def set_active_tower_overlay(raw: dict[str, Any] | None) -> None:
+    global _active_tower_overlay
+    _active_tower_overlay = raw
+
+
+def clear_active_tower_overlay() -> None:
+    set_active_tower_overlay(None)
+
 
 @dataclass(frozen=True)
 class TowerExitSpec:
@@ -63,11 +74,7 @@ class TowerConfig:
         return int(value)
 
 
-def load_tower_config(path: Path | None = None) -> TowerConfig:
-    p = path or TOWER_YML
-    with p.open(encoding="utf-8") as f:
-        raw = yaml.safe_load(f) or {}
-
+def _parse_tower_raw(raw: dict[str, Any]) -> TowerConfig:
     exits: list[TowerExitSpec] = []
     for name, cfg in (raw.get("exits") or {}).items():
         exits.append(
@@ -94,3 +101,17 @@ def load_tower_config(path: Path | None = None) -> TowerConfig:
         stage_freeze=raw.get("stage_freeze") or {},
         stage_shallow_train_layers=stage_shallow_train_layers,
     )
+
+
+def load_tower_config(path: Path | None = None) -> TowerConfig:
+    if path is not None:
+        with path.open(encoding="utf-8") as f:
+            raw = yaml.safe_load(f) or {}
+        return _parse_tower_raw(raw)
+
+    if _active_tower_overlay is not None:
+        return _parse_tower_raw(_active_tower_overlay)
+
+    with TOWER_YML.open(encoding="utf-8") as f:
+        raw = yaml.safe_load(f) or {}
+    return _parse_tower_raw(raw)

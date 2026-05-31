@@ -7,6 +7,7 @@ from transformers import AutoTokenizer
 
 from tower.config import PROJECT_ROOT
 from tower.train.config import TrainConfig
+from tower.train.size_preset import resolve_model_config_dict
 from tower.unify.compat import (
     apply_sensenova_transformers_compat,
     fix_llm_config_compat,
@@ -106,7 +107,8 @@ def build_scratch_model(cfg: TrainConfig):
     if not config_path:
         raise ValueError("model_config_path is required for scratch init")
 
-    config = NEOChatConfig.from_pretrained(config_path)
+    merged = resolve_model_config_dict(cfg)
+    config = NEOChatConfig.from_dict(merged)
     fix_llm_config_compat(config)
     fix_vision_config_compat(config)
     model = NEOChatModel(config)
