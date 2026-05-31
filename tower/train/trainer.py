@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import time
 from dataclasses import asdict
 
 import torch
@@ -13,6 +14,12 @@ from tower.paths import ensure_train_paths
 from tower.train.config import TrainConfig
 from tower.train.curriculum import CurriculumCallback
 from tower.train.dataset import make_unified_data_module
+from tower.train.diagnostics import (
+    TowerTrainDiagnosticsCallback,
+    distributed_barrier,
+    distributed_rank,
+    log_training_phase,
+)
 from tower.train.freeze import apply_stage_freeze, apply_tower_exit_freeze
 from tower.train.registry import inject_data_dict
 from tower.unify.build import build_model_and_tokenizer
@@ -119,26 +126,34 @@ def _resolve_deepspeed(cfg: TrainConfig) -> str | None:
 
 
 def _run_dataloader_preflight(trainer: Trainer, steps: int) -> None:
-    """Warm up dataloader and show fetch progress before training starts."""
+    """Warm up dataloader on every rank, then barrier before trainer.train().
+
+    Previously only rank 0 prefetched while other ranks entered trainer.train() and
+    blocked on DeepSpeed/NCCL collectives — appearing as a hang at 0/30 steps.
+    """
     if steps <= 0:
-        return
-    local_rank = int(os.environ.get("LOCAL_RANK", "0") or 0)
-    if local_rank != 0:
         return
     dl = trainer.get_train_dataloader()
     if dl is None:
         return
+
+    rank = distributed_rank()
+    target = int(steps)
+    log_training_phase("dataloader preflight start", batches=target)
 
     try:
         from tqdm.auto import tqdm
     except Exception:
         tqdm = None
 
-    target = int(steps)
-    logger.info("Dataloader preflight: fetching %s batch(es)", target)
     it = iter(dl)
     fetched = 0
-    progress = tqdm(total=target, desc="DataLoad", leave=False) if tqdm is not None else None
+    t0 = time.monotonic()
+    progress = (
+        tqdm(total=target, desc=f"DataLoad[r{rank}]", leave=False)
+        if tqdm is not None and rank == 0
+        else None
+    )
     try:
         while fetched < target:
             try:
@@ -149,11 +164,20 @@ def _run_dataloader_preflight(trainer: Trainer, steps: int) -> None:
             if progress is not None:
                 progress.update(1)
             elif fetched % 10 == 0 or fetched == target:
-                logger.info("Dataloader preflight progress: %s/%s", fetched, target)
+                logger.info(
+                    "[rank %s] Dataloader preflight progress: %s/%s", rank, fetched, target
+                )
     finally:
         if progress is not None:
             progress.close()
-    logger.info("Dataloader preflight done: fetched %s/%s batch(es)", fetched, target)
+
+    log_training_phase(
+        "dataloader preflight done",
+        fetched=fetched,
+        target=target,
+        seconds=f"{time.monotonic() - t0:.1f}",
+    )
+    distributed_barrier("after_dataloader_preflight")
 
 
 def run_training(cfg: TrainConfig) -> None:
@@ -161,6 +185,14 @@ def run_training(cfg: TrainConfig) -> None:
     inject_data_dict()
 
     from neo.train.argument import DataArguments, TrainingArguments
+
+    log_training_phase(
+        "run_training start",
+        stage=cfg.stage,
+        output_dir=cfg.output_dir,
+        max_steps=cfg.max_steps,
+        datasets=cfg.datasets,
+    )
 
     os.makedirs(cfg.output_dir, exist_ok=True)
 
@@ -225,11 +257,20 @@ def run_training(cfg: TrainConfig) -> None:
 
     set_seed(training_args.seed)
 
+    t_build = time.monotonic()
     neo_model, tokenizer = build_model_and_tokenizer(cfg)
     if cfg.bf16:
         neo_model = neo_model.to(dtype=torch.bfloat16)
 
     model = FlowJepaTowerTrainModel(neo_model, cfg) if cfg.use_flow_tower else SenseNovaTrainModel(neo_model, cfg)
+    hidden = getattr(model.config, "llm_config", model.config)
+    llm_hidden = getattr(hidden, "hidden_size", getattr(model.config, "hidden_size", "?"))
+    log_training_phase(
+        "model ready",
+        use_flow_tower=cfg.use_flow_tower,
+        llm_hidden_size=llm_hidden,
+        seconds=f"{time.monotonic() - t_build:.1f}",
+    )
 
     if training_args.gradient_checkpointing:
         model.gradient_checkpointing_enable()
@@ -245,7 +286,7 @@ def run_training(cfg: TrainConfig) -> None:
         cfg=cfg,
     )
     curriculum_runtime = data_module.pop("curriculum_runtime")
-    callbacks = []
+    callbacks = [TowerTrainDiagnosticsCallback()]
     if cfg.curriculum:
         callbacks.append(
             CurriculumCallback(
@@ -267,14 +308,17 @@ def run_training(cfg: TrainConfig) -> None:
 
     preflight_steps = int(os.environ.get("TOWER_DATALOADER_PREFLIGHT_STEPS", "0") or 0)
     _run_dataloader_preflight(trainer, preflight_steps)
+    distributed_barrier("before_trainer_train")
 
     ckpt_dirs = sorted(pathlib.Path(training_args.output_dir).glob("checkpoint-*"))
     resume = ckpt_dirs and (ckpt_dirs[-1] / "pytorch_model.bin").is_file()
+    log_training_phase("trainer.train() enter", resume=resume, preflight_steps=preflight_steps)
     if resume:
         logger.info("checkpoint found, resume training")
         trainer.train(resume_from_checkpoint=True)
     else:
         trainer.train()
+    log_training_phase("trainer.train() finished")
 
     trainer.save_state()
     safe_save_model_for_hf_trainer(trainer, training_args.output_dir)
