@@ -321,8 +321,9 @@ def _log_block_causal_sdpa_once() -> None:
 
     log = logging.get_logger(__name__)
     log.warning(
-        "Block-causal attention: native fused SDPA (EFFICIENT/FLASH/CUDNN; MATH disabled). "
-        "Set TOWER_DISABLE_SDPA_BLOCK_ATTN=1 to revert to eager L×L materialization."
+        "Block-causal attention: native fused SDPA (TOWER_SDPA_BACKENDS=%s; MATH disabled on CUDA). "
+        "Set TOWER_DISABLE_SDPA_BLOCK_ATTN=1 to revert to eager L×L materialization.",
+        os.environ.get("TOWER_SDPA_BACKENDS", "efficient,cudnn"),
     )
 
 
@@ -345,9 +346,9 @@ def sdpa_block_attention_forward(
     attn_mask = attention_mask
     if attn_mask is not None:
         attn_mask = attn_mask[:, :, :, : key_states.shape[-2]]
-        # Fused SDPA expects fp32 additive masks; bf16 finfo.min can corrupt backward on H800.
-        if attn_mask.dtype != torch.float32:
-            attn_mask = attn_mask.to(dtype=torch.float32)
+        # PyTorch SDPA requires attn_mask dtype == query dtype (bf16 training).
+        if attn_mask.dtype != query.dtype:
+            attn_mask = attn_mask.to(dtype=query.dtype)
 
     dropout_p = float(dropout) if module.training else 0.0
     with _sdpa_non_math_context(query.device):
