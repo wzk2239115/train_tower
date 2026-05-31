@@ -104,6 +104,57 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
         t = t.reshape(-1)
         return z, t
 
+    def _merge_pixel_patches(
+        self,
+        clean: torch.Tensor,
+        grid_hw: torch.Tensor | None,
+    ) -> torch.Tensor:
+        """Pack per-patch pixels into merge-sized macro patches.
+
+        Input ``clean`` is flattened per-patch pixels with dim
+        ``3 * patch_size^2``. For pixel FM exits we need dim
+        ``3 * (patch_size * merge)^2`` so target/z match fm_head output.
+        """
+        merge = max(int(1 / self.model.downsample_ratio), 1)
+        if merge <= 1 or grid_hw is None or clean.numel() == 0:
+            return clean
+
+        if not isinstance(grid_hw, torch.Tensor):
+            grid_hw = torch.tensor(grid_hw, device=clean.device)
+        grid_hw = grid_hw.to(device=clean.device)
+
+        feat_dim = int(clean.shape[-1])
+        if feat_dim <= 0:
+            return clean
+
+        chunks: list[torch.Tensor] = []
+        offset = 0
+        for i in range(grid_hw.shape[0]):
+            h = int(grid_hw[i, 0].item())
+            w = int(grid_hw[i, 1].item())
+            n = h * w
+            if n <= 0 or offset + n > clean.shape[0]:
+                break
+            cur = clean[offset : offset + n]
+            offset += n
+            if h < merge or w < merge:
+                continue
+            h2 = (h // merge) * merge
+            w2 = (w // merge) * merge
+            if h2 <= 0 or w2 <= 0:
+                continue
+            cur2d = cur.view(h, w, feat_dim)[:h2, :w2]
+            packed = (
+                cur2d.view(h2 // merge, merge, w2 // merge, merge, feat_dim)
+                .permute(0, 2, 1, 3, 4)
+                .reshape((h2 // merge) * (w2 // merge), feat_dim * merge * merge)
+            )
+            chunks.append(packed)
+
+        if not chunks:
+            return clean[:0]
+        return torch.cat(chunks, dim=0) if len(chunks) > 1 else chunks[0]
+
     def _run_backbone_layers(
         self,
         hidden_states: torch.Tensor,
@@ -270,9 +321,12 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
                 .reshape(-1, hidden.shape[-1])
             )
 
+            clean_pixel = self._merge_pixel_patches(clean, grid_hw)
             z_world, t_world = self._fm_sample(clean_embed_und)
             z_embed, t_embed = self._fm_sample(clean_embed_gen)
-            z_pixel, t_pixel = self._fm_sample(clean, noise_scale=noise_scale)
+            z_pixel, t_pixel = self._fm_sample(clean_pixel, noise_scale=noise_scale)
+        else:
+            clean_pixel = None
 
         labels = batch.get("labels")
         text_mask = self._text_supervision_mask(input_ids, labels, selected)
@@ -294,7 +348,7 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
             "text_mask": text_mask,
             "clean_embed_und": clean_embed_und,
             "clean_embed_gen": clean_embed_gen,
-            "clean_pixel": clean,
+            "clean_pixel": clean_pixel,
             "clean_audio": clean_audio,
             "clean_text": clean_text,
             "z_world": z_world,
