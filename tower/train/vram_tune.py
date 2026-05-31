@@ -184,8 +184,8 @@ def apply_h800_vram_tune(cfg: TrainConfig) -> TrainConfig:
         global_batch = tuned.per_device_train_batch_size * tuned.gradient_accumulation_steps * world
         logger.warning(
             "[vram_tune] stage=%s score %.2f→%.2f (limit %.2f). "
-            "pack %s→%s accum %s→%s pixels %s→%s seq %s→%s | global≈%s. "
-            "Note: per_device_train_batch_size = flattened pack count; OOM fix is SDPA block attn in compat.",
+            "pack %s→%s accum %s→%s pixels %s→%s seq %s→%s grad_ckpt %s→%s | global≈%s. "
+            "Note: per_device_train_batch_size = flattened pack count; OOM fix is native SDPA block attn.",
             tuned.stage,
             initial_score,
             after_score,
