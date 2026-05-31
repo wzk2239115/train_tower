@@ -22,6 +22,7 @@ run_stage() {
   local stage_name="$1"
   local config_path="$2"
   local required_ckpt="${3:-}"
+  shift 3
 
   if [[ -n "${required_ckpt}" && ! -d "${required_ckpt}" ]]; then
     echo "[h100_resume_pipeline] missing required checkpoint dir: ${required_ckpt}" >&2
