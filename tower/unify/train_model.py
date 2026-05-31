@@ -76,6 +76,7 @@ class SenseNovaTrainModel(nn.Module):
         super().__init__()
         self.model = model
         self.cfg = cfg
+        self._fm_dim_warned = False
         self._patch_fm_head_for_scale()
 
     def _patch_fm_head_for_scale(self) -> None:
@@ -310,6 +311,8 @@ class SenseNovaTrainModel(nn.Module):
         n = min(selected.sum().item(), vit_noisy.shape[0])
         if n > 0:
             hidden[0, selected][:n] = vit_noisy[:n]
+        else:
+            return torch.tensor(0.0, device=self.device)
 
         if n > 0:
             if t_scalar.numel() > 0:
@@ -350,6 +353,29 @@ class SenseNovaTrainModel(nn.Module):
         x_pred = self.model.fm_modules["fm_head"](h)
         target = clean[:n]
         z_part = z[:n]
+        if x_pred.shape[-1] != z_part.shape[-1]:
+            pred_dim = int(x_pred.shape[-1])
+            data_dim = int(z_part.shape[-1])
+            if pred_dim > data_dim and pred_dim % data_dim == 0:
+                # Keep FM training robust across checkpoints that were saved
+                # with different fm_head output widths (e.g. 3072 vs 768).
+                # Fold the extra channels into the target width.
+                x_pred = x_pred.view(n, data_dim, pred_dim // data_dim).mean(dim=-1)
+            elif data_dim > pred_dim and data_dim % pred_dim == 0:
+                target = target.view(n, pred_dim, data_dim // pred_dim).mean(dim=-1)
+                z_part = z_part.view(n, pred_dim, data_dim // pred_dim).mean(dim=-1)
+            else:
+                min_dim = min(pred_dim, data_dim)
+                x_pred = x_pred[:, :min_dim]
+                target = target[:, :min_dim]
+                z_part = z_part[:, :min_dim]
+            if not self._fm_dim_warned:
+                logger.warning(
+                    "Aligned FM dimensions for loss: pred=%s target=%s",
+                    pred_dim,
+                    data_dim,
+                )
+                self._fm_dim_warned = True
         t_count = min(n, int(t_scalar.numel()))
         t_part = t_scalar[:t_count]
         if t_part.numel() == 1 and n > 1:
