@@ -13,10 +13,18 @@ h100_env_setup
 source "${ROOT}/scripts/train_env.sh"
 
 WORLD_CKPT="${WORLD_CKPT:-outputs/pretrain/world_pt_h800}"
-UW_CONFIG="${UW_CONFIG:-configs/train/understanding_warmup_h800_resume.yaml}"
-GEN_PT_CONFIG="${GEN_PT_CONFIG:-configs/train/generation_pt_h800_resume.yaml}"
-MT_CONFIG="${MT_CONFIG:-configs/train/unified_mt_h800_resume.yaml}"
-SFT_CONFIG="${SFT_CONFIG:-configs/train/unified_sft_h800_resume.yaml}"
+H800_PROFILE="${H800_PROFILE:-stable}"  # stable | turbo
+if [[ "${H800_PROFILE}" == "turbo" ]]; then
+  UW_CONFIG="${UW_CONFIG:-configs/train/understanding_warmup_h800_turbo.yaml}"
+  GEN_PT_CONFIG="${GEN_PT_CONFIG:-configs/train/generation_pt_h800_turbo.yaml}"
+  MT_CONFIG="${MT_CONFIG:-configs/train/unified_mt_h800_turbo.yaml}"
+  SFT_CONFIG="${SFT_CONFIG:-configs/train/unified_sft_h800_turbo.yaml}"
+else
+  UW_CONFIG="${UW_CONFIG:-configs/train/understanding_warmup_h800_resume.yaml}"
+  GEN_PT_CONFIG="${GEN_PT_CONFIG:-configs/train/generation_pt_h800_resume.yaml}"
+  MT_CONFIG="${MT_CONFIG:-configs/train/unified_mt_h800_resume.yaml}"
+  SFT_CONFIG="${SFT_CONFIG:-configs/train/unified_sft_h800_resume.yaml}"
+fi
 
 run_stage() {
   local stage_name="$1"
@@ -37,6 +45,7 @@ run_stage() {
   train_env_setup
   train_env_print_training_summary config "${CONFIG}"
   echo "[h100_resume_pipeline] stage=${stage_name} NUM_GPUS=${NUM_GPUS} CONFIG=${CONFIG}"
+  echo "[h100_resume_pipeline] profile=${H800_PROFILE}"
   echo "[h100_resume_pipeline] MASTER=${MASTER_ADDR}:${MASTER_PORT} USE_DEEPSPEED=${USE_DEEPSPEED}"
   [[ -n "${DATASETS:-}" ]] && echo "[h100_resume_pipeline] DATASETS=${DATASETS}"
   [[ -n "${MAX_STEPS:-}" ]] && echo "[h100_resume_pipeline] MAX_STEPS=${MAX_STEPS}"
