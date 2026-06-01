@@ -94,12 +94,14 @@ def _scan_directory(data_root: Path) -> dict:
             "total_annotation_files": 0,
             "total_annotation_lines": 0,
             "total_size_bytes": 0,
+            "total_size_human": "0 B",
             "modality_breakdown": defaultdict(int),
         },
     }
 
     if not data_root.exists():
         result["error"] = f"DATA_ROOT does not exist: {data_root}"
+        result["summary"]["modality_breakdown"] = dict(result["summary"]["modality_breakdown"])
         return result
 
     annotation_exts = {".jsonl", ".json", ".csv", ".tsv", ".parquet"}
