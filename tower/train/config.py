@@ -165,7 +165,14 @@ class TrainConfig:
                     settings[key] = dict(item[key]) if key == "loss_weights" else item[key]
             for key in CURRICULUM_TRAIN_OVERRIDE_KEYS:
                 if key in item:
-                    settings[key] = float(item[key])
+                    val = item[key]
+                    field_info = TrainConfig.__dataclass_fields__.get(key)
+                    if field_info is not None and field_info.type in ("bool", bool):
+                        settings[key] = bool(val)
+                    elif field_info is not None and field_info.type in ("int", int):
+                        settings[key] = int(val)
+                    else:
+                        settings[key] = float(val)
         for key in CURRICULUM_TRAIN_OVERRIDE_KEYS:
             if key not in settings:
                 settings[key] = float(getattr(self, key))

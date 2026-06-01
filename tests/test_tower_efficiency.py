@@ -55,7 +55,10 @@ class PartialForwardTest(unittest.TestCase):
         tower.tower_cfg = load_tower_config()
         tower.tower_exits = nn.ModuleDict()
         tower.cfg = TrainConfig()
-        tower.audio_proj = nn.Identity()
+        tower.audio_und_proj = nn.Identity()
+        tower.audio_gen_proj = nn.Identity()
+        tower.video_und_proj = nn.Identity()
+        tower.video_gen_proj = nn.Identity()
 
         hidden = torch.zeros(1, 4, 1)
         indicators = torch.zeros(4, dtype=torch.bool)
