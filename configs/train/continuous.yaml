@@ -4,7 +4,7 @@ weight_init: random
 model_config_path: configs/model/sensenova_500m_mot
 tokenizer_name_or_path: configs/tokenizer/qwen3
 use_flow_tower: true
-datasets: "blip3o_long_pt,blip3o_short_pt"
+datasets: "blip3o_long_pt,blip3o_short_pt,wavcaps_pt"
 loss_weights:
   ce: 0.0
   fm: 1.0
@@ -17,25 +17,43 @@ tower_self_cond_prob: 0.0
 tower_self_cond_cfg_min: 1.0
 tower_self_cond_cfg_max: 1.0
 
+audio_patch_dim: 80
+audio_n_mels: 80
+audio_patch_t: 4
+audio_sample_rate: 24000
+audio_hop_size: 256
+audio_context_token_id: -1
+
+video_patch_dim: 1024
+video_num_frames: 16
+video_context_token_id: -1
+
+cfg_audio_drop_prob: 0.0
+audio_cfg_scale: 1.0
+max_audio_duration_ms: 5000
+max_video_frames_gen: 16
+
 # One-run super omni curriculum: all 5 stages in a single job (no checkpoint_chain).
 # Step totals: 50k + 200k + 100k + 50k + 20k = 420k
+# Modalities: image (blip3o/llava/sharegpt4v/refcoco/textcaps/docvqa/chartqa)
+#             audio (wavcaps)  video (msrvtt)
 curriculum:
   - stage: world_pt
     until_step: 49999
-    datasets: "blip3o_long_pt,blip3o_short_pt"
+    datasets: "blip3o_long_pt,blip3o_short_pt,wavcaps_pt"
     loss_weights:
       ce: 0.0
       fm: 1.0
     tower_self_cond_prob: 0.0
   - stage: understanding_warmup
     until_step: 249999
-    datasets: "blip3o_long_pt,blip3o_short_pt"
+    datasets: "blip3o_long_pt,blip3o_short_pt,wavcaps_pt"
     loss_weights:
       ce: 1.0
       fm: 0.0
   - stage: generation_pt
     until_step: 349999
-    datasets: "blip3o_long_pt,blip3o_short_pt"
+    datasets: "blip3o_long_pt,blip3o_short_pt,wavcaps_pt"
     task_override: t2i
     loss_weights:
       ce: 0.0
@@ -48,7 +66,7 @@ curriculum:
     tower_self_cond_cfg_max: 3.0
   - stage: unified_mt
     until_step: 399999
-    datasets: "blip3o_long_mt,blip3o_short_mt,llava150k_mt,sharegpt4v_mt,refcoco_mt,textcaps_mt"
+    datasets: "blip3o_long_mt,blip3o_short_mt,llava150k_mt,sharegpt4v_mt,refcoco_mt,textcaps_mt,wavcaps_mt,msrvtt_mt"
     max_seq_length: 16384
     loss_weights:
       ce: 1.0
@@ -61,7 +79,7 @@ curriculum:
     tower_self_cond_cfg_max: 2.0
   - stage: unified_sft
     until_step: 419999
-    datasets: "llava150k_sft,sharegpt4v_sft,refcoco_sft,textcaps_sft,docvqa_sft,chartqa_sft"
+    datasets: "llava150k_sft,sharegpt4v_sft,refcoco_sft,textcaps_sft,docvqa_sft,chartqa_sft,wavcaps_mt,msrvtt_sft"
     max_seq_length: 16384
     gradient_accumulation_steps: 2
     loss_weights:
