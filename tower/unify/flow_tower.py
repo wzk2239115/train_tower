@@ -67,12 +67,8 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
         )
         self._build_tower_exits()
         self._tower_global_step: int = 0
+        self._last_logged_stage: str = ""
         gn = getattr(cfg, "grad_norm_balance", False)
-        import logging as _logging
-        _logging.getLogger(__name__).info(
-            "[FlowTower] init grad_norm_balance=%s fm_weight=%s ce_weight=%s",
-            gn, cfg.fm_weight, cfg.ce_weight,
-        )
         if gn:
             self._grad_norm_balancer = GradNormBalancer(cfg, self)
             self.add_module("grad_norm_weights", self._grad_norm_balancer.weights_module)
@@ -119,11 +115,6 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
 
     def set_curriculum_step(self, step: int) -> None:
         self._tower_global_step = max(int(step), 0)
-        import logging as _logging
-        _logging.getLogger(__name__).info(
-            "[FlowTower] set_curriculum_step=%d stage=%s",
-            self._tower_global_step, self._current_stage(),
-        )
 
     def _current_stage(self) -> str:
         return self.cfg.curriculum_stage_for_step(self._tower_global_step)
@@ -912,14 +903,15 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
         if not getattr(self.cfg, "use_flow_tower", False):
             return super().forward(**batch)
 
-        import logging as _logging
-        _logging.getLogger(__name__).debug(
-            "[FlowTower] forward step=%d stage=%s ce_w=%s fm_w=%s",
-            self._tower_global_step,
-            self._current_stage(),
-            self.cfg.ce_weight,
-            self.cfg.fm_weight,
-        )
+        stage = self._current_stage()
+        if stage != self._last_logged_stage:
+            self._last_logged_stage = stage
+            import logging as _logging
+            _logging.getLogger(__name__).info(
+                "[FlowTower] stage→%s step=%d ce_w=%.3f fm_w=%.4f",
+                stage, self._tower_global_step,
+                self.cfg.ce_weight, self.cfg.fm_weight,
+            )
 
         loss_breakdown: dict[str, float] = {}
         per_task_losses = self._tower_forward(batch, loss_breakdown=loss_breakdown)
