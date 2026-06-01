@@ -105,12 +105,6 @@ def _scan_directory(data_root: Path) -> dict:
         return result
 
     annotation_exts = {".jsonl", ".json", ".csv", ".tsv", ".parquet"}
-    media_exts = {
-        ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp",
-        ".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac",
-        ".mp4", ".avi", ".mkv", ".mov", ".webm",
-        ".pt", ".bin", ".safetensors", ".npy",
-    }
 
     for entry in sorted(data_root.iterdir()):
         if not entry.is_dir():
@@ -121,13 +115,6 @@ def _scan_directory(data_root: Path) -> dict:
         dir_info = {
             "path": str(entry.relative_to(data_root)),
             "annotation_files": [],
-            "media_stats": {
-                "image_count": 0,
-                "audio_count": 0,
-                "video_count": 0,
-                "other_count": 0,
-                "total_media_bytes": 0,
-            },
             "subdirs": [],
             "total_size_bytes": 0,
         }
@@ -135,52 +122,32 @@ def _scan_directory(data_root: Path) -> dict:
         for root, dirs, files in os.walk(entry):
             rel = Path(root)
             for fname in files:
-                fpath = rel / fname
-                try:
-                    fsize = fpath.stat().st_size
-                except OSError:
-                    fsize = 0
-                dir_info["total_size_bytes"] += fsize
-
                 ext = Path(fname).suffix.lower()
                 if ext in annotation_exts:
+                    fpath = rel / fname
                     af = _scan_annotation_file(fpath)
                     af["rel_path"] = str(fpath.relative_to(entry))
                     dir_info["annotation_files"].append(af)
                     result["summary"]["total_annotation_lines"] += af.get("total_lines", 0)
-                elif ext in (".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"):
-                    dir_info["media_stats"]["image_count"] += 1
-                    dir_info["media_stats"]["total_media_bytes"] += fsize
-                elif ext in (".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac"):
-                    dir_info["media_stats"]["audio_count"] += 1
-                    dir_info["media_stats"]["total_media_bytes"] += fsize
-                elif ext in (".mp4", ".avi", ".mkv", ".mov", ".webm"):
-                    dir_info["media_stats"]["video_count"] += 1
-                    dir_info["media_stats"]["total_media_bytes"] += fsize
-                elif ext not in (".txt", ".log", ".md"):
-                    dir_info["media_stats"]["other_count"] += 1
 
-            for d in dirs:
-                sub_rel = Path(root) / d
-                dir_info["subdirs"].append(str(sub_rel.relative_to(entry)))
+            sub_depth = len(Path(root).relative_to(entry).parts)
+            if sub_depth < 2:
+                for d in dirs:
+                    dir_info["subdirs"].append(
+                        str((Path(root) / d).relative_to(entry))
+                    )
 
-        dir_info["total_size_human"] = _human_size(dir_info["total_size_bytes"])
-        dir_info["media_stats"]["total_media_human"] = _human_size(
-            dir_info["media_stats"]["total_media_bytes"]
+        dir_info["total_size_bytes"] = sum(
+            af.get("size_bytes", 0) for af in dir_info["annotation_files"]
         )
+        dir_info["total_size_human"] = _human_size(dir_info["total_size_bytes"])
 
         modalities = []
-        if dir_info["media_stats"]["image_count"] > 0 or any(
-            af.get("has_image") for af in dir_info["annotation_files"]
-        ):
+        if any(af.get("has_image") for af in dir_info["annotation_files"]):
             modalities.append("image")
-        if dir_info["media_stats"]["audio_count"] > 0 or any(
-            af.get("has_audio") for af in dir_info["annotation_files"]
-        ):
+        if any(af.get("has_audio") for af in dir_info["annotation_files"]):
             modalities.append("audio")
-        if dir_info["media_stats"]["video_count"] > 0 or any(
-            af.get("has_video") for af in dir_info["annotation_files"]
-        ):
+        if any(af.get("has_video") for af in dir_info["annotation_files"]):
             modalities.append("video")
         if dir_info["annotation_files"] and not modalities:
             modalities.append("text")
