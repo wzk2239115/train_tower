@@ -4,7 +4,7 @@ weight_init: random
 model_config_path: configs/model/sensenova_500m_mot
 tokenizer_name_or_path: configs/tokenizer/qwen3
 use_flow_tower: true
-datasets: "blip3o_long_pt,blip3o_short_pt,wavcaps_pt"
+datasets: "blip3o_long_pt,blip3o_short_pt"
 loss_weights:
   ce: 0.0
   fm: 1.0
