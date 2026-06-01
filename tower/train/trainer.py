@@ -68,8 +68,10 @@ class TowerTrainer(Trainer):
         stats = inputs.pop("_tower_batch_stats", None)
         if stats is not None:
             self._last_packed_batch_stats = stats
-        if hasattr(model, "set_curriculum_step"):
+        try:
             model.set_curriculum_step(self.state.global_step)
+        except AttributeError:
+            pass
 
         loss, outputs = super().compute_loss(
             model, inputs, return_outputs=True,
