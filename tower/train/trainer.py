@@ -68,14 +68,18 @@ class TowerTrainer(Trainer):
             self._last_packed_batch_stats = stats
         if hasattr(model, "set_curriculum_step"):
             model.set_curriculum_step(self.state.global_step)
-        if num_items_in_batch is None:
-            return super().compute_loss(model, inputs, return_outputs=return_outputs)
-        return super().compute_loss(
-            model,
-            inputs,
-            return_outputs=return_outputs,
+
+        loss, outputs = super().compute_loss(
+            model, inputs, return_outputs=True,
             num_items_in_batch=num_items_in_batch,
         )
+
+        if outputs is not None and hasattr(outputs, "loss_breakdown"):
+            self._last_loss_breakdown = outputs.loss_breakdown
+
+        if return_outputs:
+            return loss, outputs
+        return loss
 
     def save_model(self, output_dir=None, _internal_call=False):
         if self.args.should_save:
@@ -331,6 +335,7 @@ def run_training(cfg: TrainConfig) -> None:
         TowerTrainDiagnosticsCallback(),
         TowerPackedBatchMonitorCallback(cfg),
         TowerStepSummaryCallback(cfg),
+        TowerLossBreakdownCallback(),
     ]
     if cfg.curriculum:
         callbacks.append(

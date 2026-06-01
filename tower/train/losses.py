@@ -14,7 +14,13 @@ def rectified_flow_velocity_loss(
     *,
     t_eps: float = 0.02,
 ) -> torch.Tensor:
-    """MSE between predicted and target velocity (SenseNova rectified flow)."""
+    """MSE between predicted and target velocity (SenseNova rectified flow).
+
+    NOTE: 当 t 接近 1 时, denom=(1-t) ≈ t_eps, velocity 被放大 ~1/t_eps 倍.
+    这导致 FM loss 量级 (~100-1000) 远大于 CE loss (~4).
+    混合训练时需要通过 loss_weights.fm 系数平衡, 或引入 GradNorm.
+    当前使用 F.mse_loss (默认 mean reduction), 已按元素平均.
+    """
     denom = (1.0 - t).clamp_min(t_eps)
     while denom.ndim < z.ndim:
         denom = denom.unsqueeze(-1)

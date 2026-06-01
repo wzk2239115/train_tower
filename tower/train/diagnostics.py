@@ -231,3 +231,47 @@ class TowerStepSummaryCallback(TrainerCallback):
             parts["WARN"] = "anomaly"
 
         log_training_phase("step_summary", **parts)
+
+
+class TowerLossBreakdownCallback(TrainerCallback):
+    """将各模态 loss 分量注入到 HF Trainer 的 log_history 中。"""
+
+    LOSS_NAMES = {
+        "ce_loss": "ce_loss",
+        "image_fm_loss": "image_fm_loss",
+        "audio_fm_loss": "audio_fm_loss",
+        "video_fm_loss": "video_fm_loss",
+        "image_jepa_loss": "image_jepa_loss",
+        "text_hidden_loss": "text_hidden_loss",
+    }
+
+    LOSS_NAMES_CN = {
+        "ce_loss": "文本CE",
+        "image_fm_loss": "图像FM",
+        "audio_fm_loss": "音频FM",
+        "video_fm_loss": "视频FM",
+        "image_jepa_loss": "图像JEPA",
+        "text_hidden_loss": "文本隐藏层",
+    }
+
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        if logs is None:
+            return
+        trainer = kwargs.get("trainer")
+        if trainer is None:
+            return
+        breakdown = getattr(trainer, "_last_loss_breakdown", None)
+        if not breakdown:
+            return
+        for key, log_key in self.LOSS_NAMES.items():
+            if key in breakdown:
+                logs[log_key] = round(breakdown[key], 4)
+
+        if distributed_rank() == 0 and state.log_history:
+            parts = []
+            for key, cn_name in self.LOSS_NAMES_CN.items():
+                val = breakdown.get(key)
+                if val is not None and val > 0:
+                    parts.append(f"{cn_name}={val:.2f}")
+            if parts:
+                logger.info("  [Loss分解] %s", " | ".join(parts))

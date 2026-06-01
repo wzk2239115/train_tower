@@ -475,6 +475,20 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
         n = min(int(ctx["selected"].sum().item()), hook_hidden.shape[1])
         return hook_hidden[0, ctx["selected"]][:n]
 
+    @staticmethod
+    def _loss_breakdown_key(spec: TowerExitSpec) -> str:
+        if spec.exit_type == "ce":
+            return "ce_loss"
+        latent_to_key = {
+            "pixel_patch": "image_fm_loss",
+            "audio_patch": "audio_fm_loss",
+            "video_patch": "video_fm_loss",
+            "vision_embed": "image_fm_loss",
+            "vision_embed_und": "image_jepa_loss",
+            "token_hidden": "text_hidden_loss",
+        }
+        return latent_to_key.get(spec.latent, f"{spec.latent}_loss")
+
     def _compute_exit_loss(
         self,
         spec: TowerExitSpec,
@@ -590,6 +604,7 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
         ctx: dict[str, Any],
         *,
         latents: set[str],
+        loss_breakdown: dict[str, float] | None = None,
     ) -> torch.Tensor:
         total = torch.tensor(0.0, device=self.device)
         stage = self._current_stage()
@@ -599,10 +614,14 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
             w = self.tower_cfg.loss_weight(spec.name, stage)
             if w <= 0 or spec.after_layer not in hooks:
                 continue
-            total = total + w * self._compute_exit_loss(spec, hooks[spec.after_layer], ctx)
+            loss_val = w * self._compute_exit_loss(spec, hooks[spec.after_layer], ctx)
+            total = total + loss_val
+            if loss_breakdown is not None:
+                key = self._loss_breakdown_key(spec)
+                loss_breakdown[key] = loss_breakdown.get(key, 0.0) + loss_val.item()
         return total
 
-    def _tower_forward(self, batch: dict[str, Any]) -> torch.Tensor:
+    def _tower_forward(self, batch: dict[str, Any], *, loss_breakdown: dict[str, float] | None = None) -> torch.Tensor:
         active = self._active_exit_specs()
         if not active:
             return torch.tensor(0.0, device=self.device)
@@ -623,7 +642,7 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
                     hook_layers=hook_layers,
                 )
                 total = total + self._accumulate_exit_losses(
-                    active, hooks, ctx, latents={"token_hidden"}
+                    active, hooks, ctx, latents={"token_hidden"}, loss_breakdown=loss_breakdown
                 )
             return total
 
@@ -640,7 +659,7 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
                     hook_layers=hook_layers,
                 )
                 und_and_ce = und_latents | {s.latent for s in active if s.exit_type == "ce"}
-                total = total + self._accumulate_exit_losses(active, hooks, ctx, latents=und_and_ce)
+                total = total + self._accumulate_exit_losses(active, hooks, ctx, latents=und_and_ce, loss_breakdown=loss_breakdown)
 
         gen_latents = {"vision_embed", "pixel_patch", "audio_patch", "video_patch"}
         if any(s.latent in gen_latents for s in active):
@@ -654,7 +673,7 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
                     stop_layer=stop_layer,
                     hook_layers=hook_layers,
                 )
-                total = total + self._accumulate_exit_losses(active, hooks, ctx, latents=gen_latents)
+                total = total + self._accumulate_exit_losses(active, hooks, ctx, latents=gen_latents, loss_breakdown=loss_breakdown)
 
         return total
 
@@ -863,10 +882,17 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
     def forward(self, **batch):
         if not getattr(self.cfg, "use_flow_tower", False):
             return super().forward(**batch)
-        tower_loss = self._tower_forward(batch)
+
+        loss_breakdown: dict[str, float] = {}
+        tower_loss = self._tower_forward(batch, loss_breakdown=loss_breakdown)
 
         if self.cfg.ce_weight > 0 and self._has_supervised_tokens(batch):
             ce_loss = self._ce_forward(batch)
             total = tower_loss + self.cfg.ce_weight * ce_loss
-            return CausalLMOutputWithPast(loss=total)
-        return CausalLMOutputWithPast(loss=tower_loss)
+            loss_breakdown["ce_loss"] = ce_loss.item()
+            out = CausalLMOutputWithPast(loss=total)
+        else:
+            out = CausalLMOutputWithPast(loss=tower_loss)
+
+        out.loss_breakdown = loss_breakdown  # type: ignore[attr-defined]
+        return out
