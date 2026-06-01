@@ -15,6 +15,7 @@ from tower.train.curriculum import CurriculumCallback
 from tower.train.dataset import make_unified_data_module
 from tower.train.packed_batch_monitor import TowerPackedBatchMonitorCallback
 from tower.train.diagnostics import (
+    TowerLossBreakdownCallback,
     TowerStepSummaryCallback,
     TowerTrainDiagnosticsCallback,
     distributed_barrier,

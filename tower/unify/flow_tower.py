@@ -121,7 +121,7 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
         model_cfg = self.model.config
         z, t, _ = sample_flow_batch(
             clean.unsqueeze(0) if clean.ndim == 2 else clean,
-            t_eps=float(getattr(model_cfg, "t_eps", 0.05)),
+            t_eps=float(getattr(model_cfg, "t_eps", 0.02)),
             p_mean=float(getattr(model_cfg, "P_mean", -0.8)),
             p_std=float(getattr(model_cfg, "P_std", 0.8)),
             time_schedule=self._fm_time_schedule(),
@@ -540,7 +540,7 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
         h, clean, z = h[:n], clean[:n], z[:n]
         module: ElfFlowTowerExit = self.tower_exits[spec.name]
         model_cfg = ctx["model_cfg"]
-        t_eps = float(getattr(model_cfg, "t_eps", 0.05))
+        t_eps = float(getattr(model_cfg, "t_eps", 0.02))
 
         noise_scale_emb = None
         if (
