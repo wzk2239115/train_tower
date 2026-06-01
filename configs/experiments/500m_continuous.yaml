@@ -49,18 +49,18 @@ overrides:
   curriculum:
     - stage: world_pt
       until_step: 49999
-      datasets: "blip3o_long_pt,blip3o_short_pt,wavcaps_pt"
+      datasets: "blip3o_long_pt,blip3o_short_pt"
       loss_weights: { ce: 0.0, fm: 1.0 }
       tower_self_cond_prob: 0.0
 
     - stage: understanding_warmup
       until_step: 249999
-      datasets: "blip3o_long_pt,blip3o_short_pt,wavcaps_pt"
+      datasets: "blip3o_long_pt,blip3o_short_pt"
       loss_weights: { ce: 1.0, fm: 0.0 }
 
     - stage: generation_pt
       until_step: 349999
-      datasets: "blip3o_long_pt,blip3o_short_pt,wavcaps_pt"
+      datasets: "blip3o_long_pt,blip3o_short_pt"
       task_override: t2i
       loss_weights: { ce: 0.0, fm: 1.0 }
       learning_rate: 1.0e-4
@@ -72,7 +72,7 @@ overrides:
 
     - stage: unified_mt
       until_step: 399999
-      datasets: "blip3o_long_mt,blip3o_short_mt,llava150k_mt,sharegpt4v_mt,refcoco_mt,textcaps_mt,wavcaps_mt,msrvtt_mt"
+      datasets: "blip3o_long_mt,blip3o_short_mt,llava150k_mt,sharegpt4v_mt,refcoco_mt,textcaps_mt,msrvtt_mt"
       max_seq_length: 16384
       loss_weights: { ce: 1.0, fm: 0.005 }
       learning_rate: 1.0e-4
@@ -84,7 +84,7 @@ overrides:
 
     - stage: unified_sft
       until_step: 419999
-      datasets: "llava150k_sft,sharegpt4v_sft,refcoco_sft,textcaps_sft,docvqa_sft,chartqa_sft,wavcaps_mt,msrvtt_sft"
+      datasets: "llava150k_sft,sharegpt4v_sft,refcoco_sft,textcaps_sft,docvqa_sft,chartqa_sft,msrvtt_sft"
       max_seq_length: 16384
       gradient_accumulation_steps: 2
       loss_weights: { ce: 1.0, fm: 0.005 }
