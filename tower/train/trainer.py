@@ -187,7 +187,8 @@ def _run_dataloader_preflight(trainer: Trainer, steps: int) -> None:
 
 
 def run_training(cfg: TrainConfig) -> None:
-    inject_data_dict()
+    from tower.train.registry import inject_data_dict as _inject, validate_curriculum_datasets as _validate, print_training_manifest as _print_manifest
+    _inject()
 
     from tower.train.size_preset import apply_size_preset_to_train_config, assert_model_tower_layer_consistency
     from tower.unify.backends import import_train_arguments
@@ -269,16 +270,23 @@ def run_training(cfg: TrainConfig) -> None:
             dl_workers,
         )
 
-    try:
-        from tower.train.registry import inject_data_dict, validate_curriculum_datasets
-        inject_data_dict()
-        logger.info("Injected manifest datasets into neo_data.data_dict")
-        if cfg.curriculum:
-            validate_curriculum_datasets(cfg.curriculum)
-            logger.info("Curriculum dataset pre-flight check passed")
-    except Exception as exc:
-        logger.error("Data registry pre-flight failed: %s", exc)
-        raise
+    logger.info("Injected manifest datasets into neo_data.data_dict")
+    if cfg.curriculum:
+        _validate(cfg.curriculum)
+        logger.info("Curriculum dataset pre-flight check passed")
+
+    from tower.train.diagnostics import distributed_rank, distributed_world_size
+    if distributed_rank() == 0:
+        _print_manifest(
+            cfg.curriculum,
+            max_steps=cfg.max_steps,
+            batch_size=cfg.per_device_train_batch_size,
+            grad_accum=cfg.gradient_accumulation_steps,
+            num_gpus=distributed_world_size(),
+            loss_weights=cfg.loss_weights,
+            use_flow_tower=cfg.use_flow_tower,
+        )
+    distributed_barrier("after_training_manifest")
 
     parser = HfArgumentParser((DataArguments, TrainingArguments))
     data_args, training_args = parser.parse_dict({**data_kwargs, **train_kwargs})

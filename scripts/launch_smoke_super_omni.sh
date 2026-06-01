@@ -31,6 +31,7 @@ export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:T
 export NCCL_SOCKET_FAMILY="${NCCL_SOCKET_FAMILY:-AF_INET}"
 export NCCL_IB_DISABLE="${NCCL_IB_DISABLE:-1}"
 export NCCL_P2P_DISABLE="${NCCL_P2P_DISABLE:-0}"
+export TOWER_AUTO_START="${TOWER_AUTO_START:-1}"
 
 if [ -z "${NCCL_SOCKET_IFNAME:-}" ]; then
     for nic in eth0 ens5 enp0s8 bond0; do
