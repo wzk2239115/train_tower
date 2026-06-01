@@ -42,16 +42,21 @@ if [ -z "${NCCL_SOCKET_IFNAME:-}" ]; then
     done
 fi
 
-# --- Step 1: Process audio data (if not already done) ---
-if ! python3 -c "import json; m=json.load(open('data/processed/manifest.json')); assert 'wavcaps' in m" 2>/dev/null; then
+# --- Step 1: Process audio + video data (if not already done) ---
+NEED_AUDIO=0
+NEED_VIDEO=0
+python3 -c "import json; m=json.load(open('data/processed/manifest.json')); assert 'wavcaps' in m" 2>/dev/null || NEED_AUDIO=1
+python3 -c "import json; m=json.load(open('data/processed/manifest.json')); assert 'msrvtt' in m" 2>/dev/null || NEED_VIDEO=1
+
+if [ "$NEED_AUDIO" = "1" ] || [ "$NEED_VIDEO" = "1" ]; then
     echo ""
-    echo "[Step 1/3] Processing audio data ..."
-    python3 scripts/process_audio.py \
-        --raw-dir data/raw \
-        --processed-dir data/processed \
-        --data-root data
+    echo "[Step 1/3] Processing data ..."
+    [ "$NEED_AUDIO" = "1" ] && echo "  - Audio: needed" || echo "  - Audio: already processed"
+    [ "$NEED_VIDEO" = "1" ] && echo "  - Video: needed" || echo "  - Video: already processed"
+    [ "$NEED_AUDIO" = "1" ] && python3 scripts/process_audio.py --raw-dir data/raw --processed-dir data/processed --data-root data
+    [ "$NEED_VIDEO" = "1" ] && python3 scripts/process_video.py --raw-dir data/raw --processed-dir data/processed
 else
-    echo "[Step 1/3] Audio data already processed, skipping"
+    echo "[Step 1/3] Audio + Video already processed, skipping"
 fi
 
 # --- Step 2: Verify data ---
