@@ -114,12 +114,7 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
         return {spec.after_layer: spec for spec in self.tower_cfg.exits}
 
     def set_curriculum_step(self, step: int) -> None:
-        prev = self._tower_global_step
         self._tower_global_step = max(int(step), 0)
-        if prev == 0 and self._tower_global_step > 0:
-            import os as _os
-            if _os.environ.get("LOCAL_RANK", "0") == "0":
-                print(f"[FlowTower] set_curriculum_step called: {prev}→{self._tower_global_step}", flush=True)
 
     def _current_stage(self) -> str:
         return self.cfg.curriculum_stage_for_step(self._tower_global_step)
@@ -911,14 +906,13 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
         stage = self._current_stage()
         if stage != self._last_logged_stage:
             self._last_logged_stage = stage
-            import os as _os
-            if _os.environ.get("LOCAL_RANK", "0") == "0":
-                print(
-                    f"[FlowTower] stage→{stage} step={self._tower_global_step} "
-                    f"ce_w={self.cfg.ce_weight:.3f} fm_w={self.cfg.fm_weight:.4f} "
-                    f"active_exits={[e.name for e in self._active_exit_specs()]}",
-                    flush=True,
-                )
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "[FlowTower] stage→%s step=%d ce_w=%.3f fm_w=%.4f exits=%s",
+                stage, self._tower_global_step,
+                self.cfg.ce_weight, self.cfg.fm_weight,
+                [e.name for e in self._active_exit_specs()],
+            )
 
         loss_breakdown: dict[str, float] = {}
         per_task_losses = self._tower_forward(batch, loss_breakdown=loss_breakdown)

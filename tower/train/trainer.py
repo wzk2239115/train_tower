@@ -71,9 +71,7 @@ class TowerTrainer(Trainer):
         try:
             model.set_curriculum_step(self.state.global_step)
         except AttributeError:
-            import os as _os
-            if _os.environ.get("LOCAL_RANK", "0") == "0":
-                print(f"[TowerTrainer] AttributeError: set_curriculum_step not found on {type(model).__name__}", flush=True)
+            pass
 
         loss, outputs = super().compute_loss(
             model, inputs, return_outputs=True,

@@ -139,7 +139,9 @@ class GradNormBalancer:
         fm_weight: float = 1.0,
         ce_weight: float = 1.0,
     ) -> tuple[torch.Tensor, dict[str, float]]:
-        if not self.enabled or self.weights_module is None:
+        use_static = (not self.enabled) or (self.weights_module is None) or (self._step < self._warmup_steps)
+
+        if use_static:
             total = torch.tensor(0.0, device=_infer_device(per_task_losses))
             weights: dict[str, float] = {}
             for name, loss in per_task_losses.items():
@@ -155,7 +157,7 @@ class GradNormBalancer:
         weights: dict[str, float] = {}
         wm = self.weights_module
         for name, loss in per_task_losses.items():
-            if not hasattr(loss, "requires_grad"):
+            if not isinstance(loss, torch.Tensor):
                 loss = torch.tensor(float(loss), device=total.device)
             w = wm.get(name) if name in wm.task_names else fm_weight
             total = total + w * loss
