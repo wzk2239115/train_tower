@@ -61,14 +61,14 @@ curriculum:
 
   - stage: unified_mt
     until_step: 239
-    datasets: blip3o_short_pt,llava150k_mt,textcaps_mt,wavcaps_pt,msrvtt_mt
+    datasets: blip3o_short_pt,llava150k_mt,textcaps_mt,msrvtt_mt
     loss_weights: { ce: 1.0, fm: 0.3 }
     tower_decoder_prob: 0.3
     cfg_label_drop_prob: 0.1
 
   - stage: unified_sft
     until_step: 299
-    datasets: llava150k_mt,refcoco_mt,textcaps_mt,wavcaps_pt,msrvtt_mt
+    datasets: llava150k_mt,refcoco_mt,textcaps_mt,msrvtt_mt
     loss_weights: { ce: 1.0, fm: 0.1 }
 
 viz:

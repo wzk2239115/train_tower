@@ -269,6 +269,17 @@ def run_training(cfg: TrainConfig) -> None:
             dl_workers,
         )
 
+    try:
+        from tower.train.registry import inject_data_dict, validate_curriculum_datasets
+        inject_data_dict()
+        logger.info("Injected manifest datasets into neo_data.data_dict")
+        if cfg.curriculum:
+            validate_curriculum_datasets(cfg.curriculum)
+            logger.info("Curriculum dataset pre-flight check passed")
+    except Exception as exc:
+        logger.error("Data registry pre-flight failed: %s", exc)
+        raise
+
     parser = HfArgumentParser((DataArguments, TrainingArguments))
     data_args, training_args = parser.parse_dict({**data_kwargs, **train_kwargs})
     if hasattr(training_args, "save_safetensors"):
