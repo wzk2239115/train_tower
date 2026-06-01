@@ -15,6 +15,7 @@ overrides:
   save_steps: 100
   logging_steps: 5
   use_flow_tower: true
+  deepspeed: configs/deepspeed/zero2.json
 
   audio_patch_dim: 80
   audio_n_mels: 80
