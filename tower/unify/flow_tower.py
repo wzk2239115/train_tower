@@ -10,12 +10,21 @@ import torch.nn as nn
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from tower.train.config import TrainConfig
+from tower.train.grad_norm import GradNormBalancer
 from tower.train.losses import compute_resolution_noise_scale, sample_flow_batch
 from tower.train.vision_batch import reconcile_vision_inputs
 from tower.unify.tower_config import TowerConfig, TowerExitSpec, load_tower_config
 from tower.unify.tower_exits import CeTowerExit, ElfFlowTowerExit, JepaTowerExit
 from tower.unify.tower_masking import sample_image_token_mask
 from tower.unify.train_model import SenseNovaTrainModel, _build_indexes_with_hw
+
+
+def _merge_dict(dst: dict[str, torch.Tensor], src: dict[str, torch.Tensor]) -> None:
+    for k, v in src.items():
+        if k in dst:
+            dst[k] = dst[k] + v
+        else:
+            dst[k] = v
 
 
 class FlowJepaTowerTrainModel(SenseNovaTrainModel):
@@ -58,6 +67,11 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
         )
         self._build_tower_exits()
         self._tower_global_step: int = 0
+        if getattr(cfg, "grad_norm_balance", False):
+            self._grad_norm_balancer = GradNormBalancer(cfg, self)
+            self.add_module("grad_norm_weights", self._grad_norm_balancer.weights_module)
+        else:
+            self._grad_norm_balancer = None
 
     def _build_tower_exits(self) -> None:
         hidden = self.model.config.llm_config.hidden_size
@@ -605,8 +619,8 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
         *,
         latents: set[str],
         loss_breakdown: dict[str, float] | None = None,
-    ) -> torch.Tensor:
-        total = torch.tensor(0.0, device=self.device)
+    ) -> dict[str, torch.Tensor]:
+        per_task: dict[str, torch.Tensor] = {}
         stage = self._current_stage()
         for spec in active:
             if spec.latent not in latents:
@@ -614,19 +628,23 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
             w = self.tower_cfg.loss_weight(spec.name, stage)
             if w <= 0 or spec.after_layer not in hooks:
                 continue
-            loss_val = w * self._compute_exit_loss(spec, hooks[spec.after_layer], ctx)
-            total = total + loss_val
+            raw_loss = self._compute_exit_loss(spec, hooks[spec.after_layer], ctx)
+            key = self._loss_breakdown_key(spec)
+            prev = per_task.get(key)
+            if prev is not None:
+                per_task[key] = prev + w * raw_loss
+            else:
+                per_task[key] = w * raw_loss
             if loss_breakdown is not None:
-                key = self._loss_breakdown_key(spec)
-                loss_breakdown[key] = loss_breakdown.get(key, 0.0) + loss_val.item()
-        return total
+                loss_breakdown[key] = loss_breakdown.get(key, 0.0) + (w * raw_loss).item()
+        return per_task
 
-    def _tower_forward(self, batch: dict[str, Any], *, loss_breakdown: dict[str, float] | None = None) -> torch.Tensor:
+    def _tower_forward(self, batch: dict[str, Any], *, loss_breakdown: dict[str, float] | None = None) -> dict[str, torch.Tensor]:
         active = self._active_exit_specs()
         if not active:
-            return torch.tensor(0.0, device=self.device)
+            return {}
 
-        total = torch.tensor(0.0, device=self.device)
+        per_task: dict[str, torch.Tensor] = {}
         stop_layer = self._max_hook_layer(active)
         hook_layers = {spec.after_layer for spec in active}
 
@@ -641,10 +659,10 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
                     stop_layer=stop_layer,
                     hook_layers=hook_layers,
                 )
-                total = total + self._accumulate_exit_losses(
+                _merge_dict(per_task, self._accumulate_exit_losses(
                     active, hooks, ctx, latents={"token_hidden"}, loss_breakdown=loss_breakdown
-                )
-            return total
+                ))
+            return per_task
 
         und_latents = {"vision_embed_und", "token_hidden"}
         if any(s.latent in und_latents or s.exit_type == "ce" for s in active):
@@ -659,7 +677,7 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
                     hook_layers=hook_layers,
                 )
                 und_and_ce = und_latents | {s.latent for s in active if s.exit_type == "ce"}
-                total = total + self._accumulate_exit_losses(active, hooks, ctx, latents=und_and_ce, loss_breakdown=loss_breakdown)
+                _merge_dict(per_task, self._accumulate_exit_losses(active, hooks, ctx, latents=und_and_ce, loss_breakdown=loss_breakdown))
 
         gen_latents = {"vision_embed", "pixel_patch", "audio_patch", "video_patch"}
         if any(s.latent in gen_latents for s in active):
@@ -673,9 +691,9 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
                     stop_layer=stop_layer,
                     hook_layers=hook_layers,
                 )
-                total = total + self._accumulate_exit_losses(active, hooks, ctx, latents=gen_latents, loss_breakdown=loss_breakdown)
+                _merge_dict(per_task, self._accumulate_exit_losses(active, hooks, ctx, latents=gen_latents, loss_breakdown=loss_breakdown))
 
-        return total
+        return per_task
 
     def _batch_has_images(self, batch: dict[str, Any]) -> bool:
         pixel_values = batch.get("pixel_values")
@@ -884,15 +902,36 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
             return super().forward(**batch)
 
         loss_breakdown: dict[str, float] = {}
-        tower_loss = self._tower_forward(batch, loss_breakdown=loss_breakdown)
+        per_task_losses = self._tower_forward(batch, loss_breakdown=loss_breakdown)
 
         if self.cfg.ce_weight > 0 and self._has_supervised_tokens(batch):
             ce_loss = self._ce_forward(batch)
-            total = tower_loss + self.cfg.ce_weight * ce_loss
+            per_task_losses["ce_loss"] = ce_loss
             loss_breakdown["ce_loss"] = ce_loss.item()
-            out = CausalLMOutputWithPast(loss=total)
-        else:
-            out = CausalLMOutputWithPast(loss=tower_loss)
 
+        balancer = getattr(self, "_grad_norm_balancer", None)
+        if balancer is not None and balancer.enabled:
+            total, weights = balancer.weighted_total(
+                per_task_losses,
+                fm_weight=self.cfg.fm_weight,
+                ce_weight=self.cfg.ce_weight,
+            )
+            loss_breakdown["grad_norm_weights"] = weights
+        else:
+            total = torch.tensor(0.0, device=self.device)
+            for name, loss in per_task_losses.items():
+                if name == "ce_loss":
+                    total = total + self.cfg.ce_weight * loss
+                else:
+                    total = total + self.cfg.fm_weight * loss
+
+        out = CausalLMOutputWithPast(loss=total)
         out.loss_breakdown = loss_breakdown  # type: ignore[attr-defined]
         return out
+
+
+def _infer_device(losses: dict[str, torch.Tensor]) -> torch.device:
+    for v in losses.values():
+        if isinstance(v, torch.Tensor) and v.numel() > 0:
+            return v.device
+    return torch.device("cpu")

@@ -1,29 +1,21 @@
-# world_pt tuned for 8× 80GB GPUs (H800 / H100).
-#
-# Uses partial tower forward (to L15) and shallow backbone freeze.
-# Flow Tower training uses block-causal masks → backbone attention stays eager.
-# Still runs und + gen paths; global batch 64 (8×4×2).
-#
-# If still OOM: set per_device_train_batch_size to 3, or max_pixels to 4194304.
-# If mem headroom remains: try max_seq_length 10240 with batch 3–4.
 stage: world_pt
 attn_implementation: eager
 init_mode: scratch
 weight_init: random
 model_config_path: configs/model/sensenova_500m_mot
 tokenizer_name_or_path: configs/tokenizer/qwen3
-datasets: "blip3o_long_pt,blip3o_short_pt"
+datasets: blip3o_long_pt,blip3o_short_pt
 use_flow_tower: true
 loss_weights:
   ce: 0.0
-  fm: 0.0
+  fm: 1.0
 tower_decoder_prob: 0.0
 max_steps: 50000
 output_dir: outputs/pretrain/world_pt_h800
 deepspeed: configs/deepspeed/zero2.json
 per_device_train_batch_size: 4
 gradient_accumulation_steps: 2
-learning_rate: 2.0e-4
+learning_rate: 0.0002
 warmup_steps: 500
 max_seq_length: 8192
 max_pixels: 8388608

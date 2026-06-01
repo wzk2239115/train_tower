@@ -38,13 +38,16 @@ overrides:
   tower_self_cond_prob: 0.0
   loss_weights:
     ce: 1.0
-    fm: 0.3
+    fm: 0.005
+  grad_norm_balance: true
+  grad_norm_target: 1.0
+  grad_norm_update_interval: 10
 
 curriculum:
   - stage: world_pt
     until_step: 59
     datasets: blip3o_short_pt
-    loss_weights: { ce: 0.0, fm: 0.0 }
+    loss_weights: { ce: 0.0, fm: 1.0 }
 
   - stage: understanding_warmup
     until_step: 119
@@ -55,21 +58,21 @@ curriculum:
     until_step: 179
     datasets: blip3o_short_pt,blip3o_long_pt
     task_override: t2i
-    loss_weights: { ce: 0.0, fm: 0.0 }
+    loss_weights: { ce: 0.0, fm: 1.0 }
     tower_self_cond_prob: 0.3
     tower_decoder_prob: 0.5
 
   - stage: unified_mt
     until_step: 239
     datasets: blip3o_short_pt,llava150k_mt,textcaps_mt,msrvtt_mt
-    loss_weights: { ce: 1.0, fm: 0.3 }
+    loss_weights: { ce: 1.0, fm: 0.005 }
     tower_decoder_prob: 0.3
     cfg_label_drop_prob: 0.1
 
   - stage: unified_sft
     until_step: 299
     datasets: llava150k_mt,refcoco_mt,textcaps_mt,msrvtt_mt
-    loss_weights: { ce: 1.0, fm: 0.1 }
+    loss_weights: { ce: 1.0, fm: 0.005 }
 
 viz:
   metrics: [loss, fm_loss, ce_loss, grad_norm]

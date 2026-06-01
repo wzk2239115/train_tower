@@ -2,22 +2,22 @@ stage: unified_sft
 init_mode: checkpoint
 model_name_or_path: outputs/pretrain/mt_h800
 tokenizer_name_or_path: outputs/pretrain/mt_h800
-datasets: "llava150k_sft,sharegpt4v_sft,refcoco_sft,textcaps_sft,docvqa_sft,chartqa_sft"
+datasets: llava150k_sft,sharegpt4v_sft,refcoco_sft,textcaps_sft,docvqa_sft,chartqa_sft
 use_flow_tower: true
 loss_weights:
   ce: 1.0
-  fm: 0.1
+  fm: 0.005
 tower_decoder_prob: 0.3
 tower_self_cond_prob: 0.2
 tower_self_cond_cfg_min: 1.0
 tower_self_cond_cfg_max: 1.5
-cfg_label_drop_prob: 0.10
+cfg_label_drop_prob: 0.1
 max_steps: 20000
 output_dir: outputs/pretrain/sft_h800
 deepspeed: configs/deepspeed/zero2.json
 per_device_train_batch_size: 5
 gradient_accumulation_steps: 1
-learning_rate: 1.2e-4
+learning_rate: 0.00012
 warmup_steps: 200
 max_seq_length: 16384
 max_pixels: 6291456

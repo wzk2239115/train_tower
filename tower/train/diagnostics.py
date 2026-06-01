@@ -275,3 +275,56 @@ class TowerLossBreakdownCallback(TrainerCallback):
                     parts.append(f"{cn_name}={val:.2f}")
             if parts:
                 logger.info("  [Loss分解] %s", " | ".join(parts))
+
+        grad_weights = breakdown.get("grad_norm_weights")
+        if isinstance(grad_weights, dict) and distributed_rank() == 0:
+            gw_parts = []
+            for key, cn_name in self.LOSS_NAMES_CN.items():
+                w = grad_weights.get(key)
+                if w is not None:
+                    gw_parts.append(f"{cn_name}×{w:.4f}")
+            if gw_parts:
+                logger.info("  [GradNorm权重] %s", " | ".join(gw_parts))
+
+
+class TowerGradNormCallback(TrainerCallback):
+    """在 backward 之后记录 per-task 梯度范数并触发 GradNorm 权重更新。"""
+
+    def on_after_backward(self, args, state, control, **kwargs):
+        model = kwargs.get("model")
+        if model is None:
+            return
+        balancer = getattr(model, "_grad_norm_balancer", None)
+        if balancer is None or not balancer.enabled:
+            return
+        breakdown = getattr(kwargs.get("trainer"), "_last_loss_breakdown", None)
+        if not breakdown:
+            return
+        per_task_losses = {}
+        for key in ("ce_loss", "image_fm_loss", "image_jepa_loss", "audio_fm_loss", "video_fm_loss", "text_hidden_loss"):
+            val = breakdown.get(key)
+            if val is not None and val > 0:
+                import torch
+                per_task_losses[key] = torch.tensor(val, device=getattr(model, "device", torch.device("cpu")), requires_grad=False)
+
+        shared_params = []
+        try:
+            llm = model.model.language_model.model
+            layers = llm.layers if hasattr(llm, "layers") else []
+            if layers:
+                last_layer = layers[-1]
+                shared_params = [p for p in last_layer.parameters() if p.grad is not None]
+        except Exception:
+            return
+        if not shared_params:
+            return
+
+        grad_norms = balancer.record_grad_norms(per_task_losses, shared_params)
+        if grad_norms and distributed_rank() == 0:
+            parts = []
+            for key, g in grad_norms.items():
+                if g > 0:
+                    cn = TowerLossBreakdownCallback.LOSS_NAMES_CN.get(key, key)
+                    parts.append(f"{cn}‖g‖={g:.2f}")
+            if parts:
+                logger.info("  [GradNorm梯度] %s", " | ".join(parts))

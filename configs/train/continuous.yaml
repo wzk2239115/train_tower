@@ -7,7 +7,10 @@ use_flow_tower: true
 datasets: "blip3o_long_pt,blip3o_short_pt"
 loss_weights:
   ce: 0.0
-  fm: 0.0
+  fm: 1.0
+grad_norm_balance: true
+grad_norm_target: 1.0
+grad_norm_update_interval: 100
 tower_decoder_prob: 0.0
 cfg_label_drop_prob: 0.15
 tower_self_cond_prob: 0.0
@@ -22,7 +25,7 @@ curriculum:
     datasets: "blip3o_long_pt,blip3o_short_pt"
     loss_weights:
       ce: 0.0
-      fm: 0.0
+      fm: 1.0
     tower_self_cond_prob: 0.0
   - stage: understanding_warmup
     until_step: 249999
@@ -36,7 +39,7 @@ curriculum:
     task_override: t2i
     loss_weights:
       ce: 0.0
-      fm: 0.0
+      fm: 1.0
     learning_rate: 1.0e-4
     tower_decoder_prob: 0.0
     cfg_label_drop_prob: 0.15
@@ -49,7 +52,7 @@ curriculum:
     max_seq_length: 16384
     loss_weights:
       ce: 1.0
-      fm: 0.3
+      fm: 0.005
     learning_rate: 1.0e-4
     tower_decoder_prob: 0.2
     cfg_label_drop_prob: 0.15
@@ -63,7 +66,7 @@ curriculum:
     gradient_accumulation_steps: 2
     loss_weights:
       ce: 1.0
-      fm: 0.1
+      fm: 0.005
     learning_rate: 1.2e-4
     tower_decoder_prob: 0.3
     cfg_label_drop_prob: 0.10

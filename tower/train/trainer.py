@@ -15,6 +15,7 @@ from tower.train.curriculum import CurriculumCallback
 from tower.train.dataset import make_unified_data_module
 from tower.train.packed_batch_monitor import TowerPackedBatchMonitorCallback
 from tower.train.diagnostics import (
+    TowerGradNormCallback,
     TowerLossBreakdownCallback,
     TowerStepSummaryCallback,
     TowerTrainDiagnosticsCallback,
@@ -337,6 +338,7 @@ def run_training(cfg: TrainConfig) -> None:
         TowerPackedBatchMonitorCallback(cfg),
         TowerStepSummaryCallback(cfg),
         TowerLossBreakdownCallback(),
+        TowerGradNormCallback(),
     ]
     if cfg.curriculum:
         callbacks.append(
