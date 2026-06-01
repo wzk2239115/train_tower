@@ -907,15 +907,23 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
         if stage != self._last_logged_stage:
             self._last_logged_stage = stage
             import logging as _logging
-            _logging.getLogger(__name__).warning(
-                "[FlowTower] stage→%s step=%d ce_w=%.3f fm_w=%.4f exits=%s",
-                stage, self._tower_global_step,
-                self.cfg.ce_weight, self.cfg.fm_weight,
-                [e.name for e in self._active_exit_specs()],
-            )
+            import os as _os
+            if _os.environ.get("LOCAL_RANK", "0") == "0":
+                _logging.getLogger(__name__).warning(
+                    "[FlowTower] stage→%s step=%d ce_w=%.3f fm_w=%.4f exits=%s",
+                    stage, self._tower_global_step,
+                    self.cfg.ce_weight, self.cfg.fm_weight,
+                    [e.name for e in self._active_exit_specs()],
+                )
 
         loss_breakdown: dict[str, float] = {}
         per_task_losses = self._tower_forward(batch, loss_breakdown=loss_breakdown)
+
+        import os as _os
+        _step = self._tower_global_step
+        if _os.environ.get("LOCAL_RANK", "0") == "0" and (_step <= 3 or _step == 60 or _step == 65 or _step == 120 or _step == 180):
+            _pt = {k: (float(v.item()) if hasattr(v, 'item') else v) for k, v in per_task_losses.items()}
+            print(f"[FlowTower DBG] step={_step} per_task={_pt} ce_w={self.cfg.ce_weight:.3f} fm_w={self.cfg.fm_weight:.4f}", flush=True)
 
         if self.cfg.ce_weight > 0 and self._has_supervised_tokens(batch):
             ce_loss = self._ce_forward(batch)
