@@ -367,8 +367,12 @@ def run_training(cfg: TrainConfig) -> None:
     distributed_barrier("before_trainer_train")
 
     ckpt_dirs = sorted(pathlib.Path(training_args.output_dir).glob("checkpoint-*"))
-    resume = ckpt_dirs and (ckpt_dirs[-1] / "pytorch_model.bin").is_file()
-    log_training_phase("trainer.train() enter", resume=resume, preflight_steps=preflight_steps)
+    last_ckpt = ckpt_dirs[-1] if ckpt_dirs else None
+    resume = last_ckpt and (
+        (last_ckpt / "pytorch_model.bin").is_file()
+        or (last_ckpt / "model.safetensors").is_file()
+    )
+    log_training_phase("trainer.train() enter", resume=resume, preflight_steps=preflight_steps, last_ckpt=str(last_ckpt) if last_ckpt else None)
     if resume:
         logger.info("checkpoint found, resume training")
         trainer.train(resume_from_checkpoint=True)
