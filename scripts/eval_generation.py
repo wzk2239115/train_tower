@@ -12,6 +12,12 @@ from pathlib import Path
 import torch
 from PIL import Image
 
+# Newer transformers may import fine-grained FP8 helpers unconditionally. Some
+# H800 images ship a Torch build without this experimental dtype; generation
+# evals do not use it, so provide an import-time sentinel for compatibility.
+if not hasattr(torch, "float8_e8m0fnu"):
+    torch.float8_e8m0fnu = torch.uint8  # type: ignore[attr-defined]
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
