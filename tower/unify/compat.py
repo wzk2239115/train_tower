@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import inspect
 from typing import Optional
 
 import torch
@@ -41,6 +42,50 @@ def sdpa_block_attention_forward(
     )
 
 
+def _call_attention_base(
+    base_fn,
+    module,
+    query,
+    key,
+    value,
+    attention_mask,
+    scaling,
+    dropout,
+    kwargs,
+):
+    """Call transformers attention functions across 5.x signature drift."""
+    try:
+        sig = inspect.signature(base_fn)
+        params = sig.parameters
+        has_var_kw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+        call_kwargs = dict(kwargs)
+        if "scaling" in params or has_var_kw:
+            call_kwargs["scaling"] = scaling
+        if "dropout" in params or has_var_kw:
+            call_kwargs["dropout"] = dropout
+        return base_fn(
+            module,
+            query,
+            key,
+            value,
+            attention_mask,
+            **call_kwargs,
+        )
+    except (TypeError, ValueError):
+        # Older vendored implementations used positional scaling before
+        # keyword dropout. Keep this fallback for local/offline images.
+        return base_fn(
+            module,
+            query,
+            key,
+            value,
+            attention_mask,
+            scaling,
+            dropout=dropout,
+            **kwargs,
+        )
+
+
 def _patch_block_causal_attention() -> None:
     """Route block-causal masks through fused SDPA on all Qwen3 attention dispatch paths."""
     global _SDPA_BLOCK_ATTN_PATCHED
@@ -76,15 +121,16 @@ def _patch_block_causal_attention() -> None:
                     dropout=dropout,
                     **kwargs,
                 )
-            return base_fn(
+            return _call_attention_base(
+                base_fn,
                 module,
                 query,
                 key,
                 value,
                 attention_mask,
                 scaling,
-                dropout=dropout,
-                **kwargs,
+                dropout,
+                kwargs,
             )
 
         return wrapped
