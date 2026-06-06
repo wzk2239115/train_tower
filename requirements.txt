@@ -1,0 +1,15 @@
+pyarrow>=14.0.0
+pyyaml>=6.0
+pillow>=10.0.0
+tqdm>=4.66.0
+pandas>=2.0.0
+ijson>=3.2.0
+matplotlib>=3.8.0
+torch>=2.5.1
+torchvision>=0.20.0
+transformers>=4.57.0
+deepspeed>=0.15.0
+accelerate>=1.0.0
+tensorboard>=2.14.0
+packaging>=23.0
+safetensors>=0.4.0
