@@ -23,6 +23,7 @@ if str(ROOT) not in sys.path:
 
 from tower.config import PROJECT_ROOT
 from tower.models.neo_unify.conversation import get_conv_template
+from tower.models.neo_unify.modeling_qwen3 import create_block_causal_mask
 from tower.models.neo_unify.utils import load_image_native
 from tower.train.experiment_profile import load_train_config_from_experiment
 from tower.train.registry import load_manifest
@@ -127,15 +128,27 @@ def _image_paths(record: dict[str, Any], jsonl_path: Path) -> list[Path]:
 def _load_samples(args: argparse.Namespace) -> tuple[Path, list[dict[str, Any]]]:
     jsonl_path = _resolve(args.jsonl) if args.jsonl else _dataset_jsonl(args.dataset)
     rows = []
+    total = 0
+    no_qa = 0
+    no_image = 0
     for rec in _iter_jsonl(jsonl_path):
+        total += 1
         qa = _first_qa(rec)
         if qa is None:
+            no_qa += 1
             continue
         if args.require_image and not rec.get("image"):
+            no_image += 1
             continue
         rows.append(rec)
     rng = random.Random(args.seed)
     rng.shuffle(rows)
+    args._sample_stats = {
+        "total": total,
+        "no_qa": no_qa,
+        "no_image": no_image,
+        "usable": len(rows),
+    }
     return jsonl_path, rows[: args.limit]
 
 
@@ -175,24 +188,78 @@ def _build_text_prompt(model, question: str) -> str:
 
 
 @torch.no_grad()
+def _greedy_from_inputs(
+    model,
+    tokenizer,
+    *,
+    input_ids: torch.Tensor,
+    inputs_embeds: torch.Tensor | None,
+    indexes: torch.Tensor,
+    max_new_tokens: int,
+) -> str:
+    attn = {"full_attention": create_block_causal_mask(indexes[0])}
+    if inputs_embeds is None:
+        outputs = model.language_model(
+            input_ids=input_ids,
+            indexes=indexes,
+            attention_mask=attn,
+            use_cache=True,
+        )
+    else:
+        outputs = model.language_model(
+            inputs_embeds=inputs_embeds,
+            indexes=indexes,
+            attention_mask=attn,
+            use_cache=True,
+        )
+    past = outputs.past_key_values
+    next_token = torch.argmax(outputs.logits[:, -1, :], dim=-1)
+
+    template = get_conv_template(model.template)
+    eos_ids = {
+        tokenizer.eos_token_id,
+        tokenizer.convert_tokens_to_ids(template.sep.strip()),
+    }
+    eos_ids = {int(x) for x in eos_ids if x is not None and int(x) >= 0}
+
+    generated: list[int] = []
+    t_idx = int(indexes[0].max().item())
+    for _ in range(max_new_tokens):
+        tok = int(next_token.item())
+        if tok in eos_ids:
+            break
+        generated.append(tok)
+
+        t_idx += 1
+        step_indexes = torch.tensor([[t_idx], [0], [0]], dtype=torch.long, device=model.device)
+        step_attn = {"full_attention": None}
+        outputs = model.language_model(
+            input_ids=next_token.view(1, 1),
+            indexes=step_indexes,
+            attention_mask=step_attn,
+            past_key_values=past,
+            use_cache=True,
+        )
+        past = outputs.past_key_values
+        next_token = torch.argmax(outputs.logits[:, -1, :], dim=-1)
+
+    return tokenizer.decode(generated, skip_special_tokens=True).strip()
+
+
+@torch.no_grad()
 def _predict_text(model, tokenizer, question: str, args: argparse.Namespace) -> str:
     query = _build_text_prompt(model, question)
     input_ids = tokenizer(query, return_tensors="pt")["input_ids"].to(model.device)
-    indexes = model.get_thw_indexes(input_ids[0], None)
-    attention_mask = torch.ones_like(input_ids, device=model.device)
     model.img_context_token_id = tokenizer.convert_tokens_to_ids("<IMG_CONTEXT>")
-    generation = model.generate(
-        pixel_values=None,
+    indexes = model.get_thw_indexes(input_ids[0], None)
+    return _greedy_from_inputs(
+        model,
+        tokenizer,
         input_ids=input_ids,
-        grid_hw=None,
-        attention_mask=attention_mask,
+        inputs_embeds=None,
+        indexes=indexes,
         max_new_tokens=args.max_new_tokens,
-        do_sample=False,
     )
-    del indexes
-    text = tokenizer.decode(generation[0], skip_special_tokens=True)
-    sep = get_conv_template(model.template).sep.strip()
-    return text.split(sep)[0].strip()
 
 
 @torch.no_grad()
@@ -219,17 +286,43 @@ def _predict_image(model, tokenizer, question: str, images: list[Path], args: ar
 
     pv_tensor = torch.cat(pixel_values, dim=0)
     ghw_tensor = torch.cat(grid_hw, dim=0)
-    generation_config = {
-        "max_new_tokens": args.max_new_tokens,
-        "do_sample": False,
-    }
-    return model.chat(
+
+    image_token_count = question.count("<image>")
+    if image_token_count == 0:
+        question = "<image>\n" * min(len(images), args.max_images) + question
+
+    template = get_conv_template(model.template)
+    template.system_message = model.system_message
+    template.append_message(template.roles[0], question)
+    template.append_message(template.roles[1], None)
+    query = template.get_prompt()
+
+    for i in range(ghw_tensor.shape[0]):
+        num_patch_token = int(ghw_tensor[i, 0] * ghw_tensor[i, 1] * model.downsample_ratio**2)
+        image_tokens = "<img>" + "<IMG_CONTEXT>" * num_patch_token + "</img>"
+        query = query.replace("<image>", image_tokens, 1)
+
+    input_ids = tokenizer(query, return_tensors="pt")["input_ids"].to(model.device)
+    indexes = model.get_thw_indexes(input_ids[0], ghw_tensor)
+    input_embeds = model.language_model.get_input_embeddings()(input_ids)
+    bsz, seqlen, hidden = input_embeds.shape
+    flat_embeds = input_embeds.reshape(bsz * seqlen, hidden)
+    flat_ids = input_ids.reshape(bsz * seqlen)
+    selected = flat_ids == model.img_context_token_id
+    vit_embeds = model.extract_feature(pv_tensor, grid_hw=ghw_tensor).reshape(-1, hidden)
+    n = min(int(selected.sum().item()), int(vit_embeds.shape[0]))
+    if n > 0:
+        token_positions = torch.nonzero(selected, as_tuple=False).view(-1)[:n]
+        flat_embeds[token_positions] = vit_embeds[:n].to(flat_embeds.device, flat_embeds.dtype)
+    input_embeds = flat_embeds.reshape(bsz, seqlen, hidden)
+
+    return _greedy_from_inputs(
+        model,
         tokenizer,
-        pv_tensor,
-        question,
-        generation_config,
-        grid_hw=ghw_tensor,
-        verbose=False,
+        input_ids=input_ids,
+        inputs_embeds=input_embeds,
+        indexes=indexes,
+        max_new_tokens=args.max_new_tokens,
     )
 
 
@@ -259,7 +352,7 @@ def main() -> int:
 
     jsonl_path, samples = _load_samples(args)
     if not samples:
-        raise RuntimeError(f"No evaluable samples from {jsonl_path}")
+        raise RuntimeError(f"No evaluable samples from {jsonl_path}; stats={args._sample_stats}")
 
     out_dir = _resolve(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
