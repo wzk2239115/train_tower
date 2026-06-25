@@ -94,10 +94,12 @@ class TestGradNormBalancer(unittest.TestCase):
         model = self._make_model()
         balancer = GradNormBalancer(cfg, model)
         losses = {"ce_loss": torch.tensor(4.0), "image_fm_loss": torch.tensor(900.0)}
-        total, weights = balancer.weighted_total(losses, fm_weight=0.005, ce_weight=1.0)
-        self.assertAlmostEqual(float(total), 4.0 + 0.005 * 900.0, places=3)
+        total, weights = balancer.weighted_total(losses, ce_weight=1.0)
+        # tower exits (image_fm_loss) carry tower.yml weights upstream and use
+        # weight 1.0 here; only the lm-head ce_loss is gated by ce_weight.
+        self.assertAlmostEqual(float(total), 4.0 + 900.0, places=3)
         self.assertAlmostEqual(weights["ce_loss"], 1.0)
-        self.assertAlmostEqual(weights["image_fm_loss"], 0.005)
+        self.assertAlmostEqual(weights["image_fm_loss"], 1.0)
 
     def test_weighted_total_enabled(self):
         cfg = self._make_cfg(enabled=True)

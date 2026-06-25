@@ -11,7 +11,7 @@ exits:
     type: jepa
     latent: vision_embed_und
     elf_depth: 2
-    ema_momentum: 0.996
+    ema_momentum: 0.99
     description: "L0 world — JEPA on understanding-path vision embeddings"
     loss_weights:
       world_pt: 1.0

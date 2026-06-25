@@ -11,7 +11,7 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from tower.train.config import TrainConfig
 from tower.train.grad_norm import GradNormBalancer
-from tower.train.losses import compute_resolution_noise_scale, sample_flow_batch
+from tower.train.losses import sample_flow_batch
 from tower.train.vision_batch import reconcile_vision_inputs
 from tower.unify.tower_config import TowerConfig, TowerExitSpec, load_tower_config
 from tower.unify.tower_exits import CeTowerExit, ElfFlowTowerExit, JepaTowerExit
@@ -115,6 +115,65 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
 
     def set_curriculum_step(self, step: int) -> None:
         self._tower_global_step = max(int(step), 0)
+
+    def _gradnorm_shared_param(self):
+        """Reference parameter for GradNorm: first trainable param of the last
+        shared transformer layer. Returns None if unavailable."""
+        try:
+            layers = self.model.language_model.model.layers
+            for p in layers[-1].parameters():
+                if p.requires_grad:
+                    return p
+        except Exception:
+            return None
+        return None
+
+    def _measure_grad_norms(self, balancer, per_task_losses: dict[str, Any]) -> dict[str, float]:
+        """Measure per-task gradient norms and update GradNorm weights.
+
+        Called inside ``forward()`` where the autograd graph is still alive, so
+        per-task losses (graph tensors) can be differentiated against the last
+        shared layer directly (``retain_graph=True`` keeps the graph for the
+        subsequent ``total.backward()``). This replaces the previous detached-
+        float path that produced all-zero norms and never updated weights.
+        Falls back gracefully (no update) if the graph cannot be retained.
+        """
+        from tower.train.grad_norm import TASK_NAMES
+
+        step = self._tower_global_step
+        if step < getattr(balancer, "_warmup_steps", 100):
+            return {}
+        interval = int(getattr(balancer, "update_interval", 100))
+        if interval > 0 and step % interval != 0:
+            return {}
+        shared = self._gradnorm_shared_param()
+        if shared is None:
+            return {}
+
+        gnorms: dict[str, float] = {}
+        for name, loss in per_task_losses.items():
+            if name not in TASK_NAMES:
+                continue
+            if not isinstance(loss, torch.Tensor) or not loss.requires_grad:
+                continue
+            try:
+                grads = torch.autograd.grad(loss, shared, retain_graph=True, allow_unused=True)
+                if grads[0] is not None:
+                    gnorms[name] = float(grads[0].norm(2).item())
+            except Exception:
+                continue
+
+        valid = {k: v for k, v in gnorms.items() if v > 0}
+        if valid and balancer.weights_module is not None:
+            target = sum(valid.values()) / len(valid) * float(getattr(balancer, "target_ratio", 1.0))
+            try:
+                balancer.weights_module.update_from_grad_norms(valid, target)
+                balancer._last_grad_norms = dict(gnorms)
+                balancer._last_target_norm = target
+                balancer._last_weights = balancer.weights_module.weights_dict()
+            except Exception:
+                pass
+        return gnorms
 
     def _current_stage(self) -> str:
         return self.cfg.curriculum_stage_for_step(self._tower_global_step)
@@ -494,7 +553,7 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
     @staticmethod
     def _loss_breakdown_key(spec: TowerExitSpec) -> str:
         if spec.exit_type == "ce":
-            return "ce_loss"
+            return "tower_ce_loss"
         latent_to_key = {
             "pixel_patch": "image_fm_loss",
             "audio_patch": "audio_fm_loss",
@@ -919,12 +978,6 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
         loss_breakdown: dict[str, float] = {}
         per_task_losses = self._tower_forward(batch, loss_breakdown=loss_breakdown)
 
-        import os as _os
-        _step = self._tower_global_step
-        if _os.environ.get("LOCAL_RANK", "0") == "0" and (_step <= 3 or _step == 60 or _step == 65 or _step == 120 or _step == 180):
-            _pt = {k: (float(v.item()) if hasattr(v, 'item') else v) for k, v in per_task_losses.items()}
-            print(f"[FlowTower DBG] step={_step} per_task={_pt} ce_w={self.cfg.ce_weight:.3f} fm_w={self.cfg.fm_weight:.4f}", flush=True)
-
         if self.cfg.ce_weight > 0 and self._has_supervised_tokens(batch):
             ce_loss = self._ce_forward(batch)
             per_task_losses["ce_loss"] = ce_loss
@@ -934,17 +987,26 @@ class FlowJepaTowerTrainModel(SenseNovaTrainModel):
         if balancer is not None and balancer.enabled:
             total, weights = balancer.weighted_total(
                 per_task_losses,
-                fm_weight=self.cfg.fm_weight,
                 ce_weight=self.cfg.ce_weight,
             )
             loss_breakdown["grad_norm_weights"] = weights
+            # Measure per-task gradient norms while the graph is alive (before
+            # the trainer back-propagates `total`) and adapt GradNorm weights.
+            gnorms = self._measure_grad_norms(balancer, per_task_losses)
+            if gnorms:
+                loss_breakdown["grad_norms"] = gnorms
         else:
+            # Per-task losses from _tower_forward already carry tower.yml
+            # per-exit weights (see _accumulate_exit_losses). The lm-head CE
+            # (key "ce_loss") is the main language task gated by ce_weight.
+            # fm_weight intentionally does NOT gate tower exits: setting
+            # loss_weights.fm=0 in world_pt will not zero out JEPA anymore.
             total = torch.tensor(0.0, device=self.device)
             for name, loss in per_task_losses.items():
                 if name == "ce_loss":
                     total = total + self.cfg.ce_weight * loss
                 else:
-                    total = total + self.cfg.fm_weight * loss
+                    total = total + loss
 
         out = CausalLMOutputWithPast(loss=total)
         out.loss_breakdown = loss_breakdown  # type: ignore[attr-defined]

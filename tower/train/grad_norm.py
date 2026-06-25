@@ -71,8 +71,12 @@ class GradNormWeights(nn.Module):
         )
         g = g.clamp(min=1e-6)
         loss_ratio = g / g.mean().clamp(min=1e-6)
-        target = torch.full_like(g, target_norm)
-        grad_update = lr * (loss_ratio - 1.0) * (g - target_norm)
+        # GradNorm update: a task with above-average gradient norm (loss_ratio>1,
+        # learning faster) must have its weight DECREASED so all tasks converge to
+        # a common gradient norm. The previous formula ``lr*(ratio-1)*(g-target)``
+        # had the wrong sign for fast tasks (it increased their weight) and an
+        # ill-scaled ``(g-target)`` factor. Use the standard relative-rate update.
+        grad_update = -lr * (loss_ratio - 1.0)
         new_raw = self.raw + grad_update
         self.raw.copy_(new_raw)
         self._weights = torch.softmax(self.raw, dim=0) * len(self.task_names)
@@ -136,19 +140,22 @@ class GradNormBalancer:
         self,
         per_task_losses: dict[str, torch.Tensor],
         *,
-        fm_weight: float = 1.0,
         ce_weight: float = 1.0,
     ) -> tuple[torch.Tensor, dict[str, float]]:
         use_static = (not self.enabled) or (self.weights_module is None) or (self._step < self._warmup_steps)
 
         if use_static:
+            # Static (warmup): tower exits already carry tower.yml per-exit
+            # weights upstream (see _accumulate_exit_losses), so multiply by 1.0
+            # here. Only the lm-head CE is gated by ce_weight. fm_weight is no
+            # longer a global gate to avoid zeroing JEPA when fm=0.
             total = torch.tensor(0.0, device=_infer_device(per_task_losses))
             weights: dict[str, float] = {}
             for name, loss in per_task_losses.items():
                 if name == "ce_loss":
                     w = ce_weight
                 else:
-                    w = fm_weight
+                    w = 1.0
                 total = total + w * loss
                 weights[name] = w
             return total, weights
@@ -159,7 +166,12 @@ class GradNormBalancer:
         for name, loss in per_task_losses.items():
             if not isinstance(loss, torch.Tensor):
                 loss = torch.tensor(float(loss), device=total.device)
-            w = wm.get(name) if name in wm.task_names else fm_weight
+            if name == "ce_loss":
+                w = ce_weight
+            elif name in wm.task_names:
+                w = wm.get(name)
+            else:
+                w = 1.0
             total = total + w * loss
             weights[name] = w
         self._last_weights = dict(weights)

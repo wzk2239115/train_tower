@@ -50,23 +50,28 @@ def _build_indexes_with_hw(model, input_ids, indexes, image_grid_hw):
 
 
 def _weighted_ce(logits, labels, loss_weight, vocab_size):
-    shift_logits = logits[..., :-1, :].contiguous().view(-1, vocab_size)
-    shift_labels = labels[..., 1:].contiguous().view(-1)
+    # The NEO data processor (tower/neo/data/data_processor.py) already performs
+    # next-token alignment: labels[p] is the prediction target for position p
+    # (labels = original_labels shifted left by one, token_weights shifted in
+    # lockstep). So logits[p] is supervised directly by labels[p] here — any
+    # further shift would misalign supervision to T[p+2] and break AR training.
+    flat_logits = logits.contiguous().view(-1, vocab_size)
+    flat_labels = labels.contiguous().view(-1)
     if loss_weight is not None:
         if isinstance(loss_weight, list):
             loss_weight = loss_weight[0]
         if not isinstance(loss_weight, torch.Tensor):
-            loss_weight = torch.tensor(loss_weight, device=shift_labels.device, dtype=torch.float32)
+            loss_weight = torch.tensor(loss_weight, device=flat_labels.device, dtype=torch.float32)
         else:
-            loss_weight = loss_weight.to(device=shift_labels.device, dtype=torch.float32)
+            loss_weight = loss_weight.to(device=flat_labels.device, dtype=torch.float32)
         if loss_weight.dim() > 1:
             loss_weight = loss_weight.view(-1)
-        if loss_weight.numel() == labels.numel():
-            loss_weight = loss_weight[1:].contiguous()
+        if loss_weight.numel() != flat_labels.numel():
+            loss_weight = (flat_labels != -100).to(torch.float32)
     else:
-        loss_weight = (shift_labels != -100).float()
+        loss_weight = (flat_labels != -100).to(torch.float32)
 
-    per_token = F.cross_entropy(shift_logits, shift_labels, ignore_index=-100, reduction="none")
+    per_token = F.cross_entropy(flat_logits, flat_labels, ignore_index=-100, reduction="none")
     denom = loss_weight.sum().clamp_min(1e-5)
     return (per_token * loss_weight).sum() / denom
 

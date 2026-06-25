@@ -107,7 +107,7 @@ class CurriculumConfigTest(unittest.TestCase):
 
         world = cfg.curriculum_data_settings_for_step(0)
         self.assertEqual(world["stage"], "world_pt")
-        self.assertEqual(world["loss_weights"], {"ce": 0.0, "fm": 0.0})
+        self.assertEqual(world["loss_weights"], {"ce": 0.0, "fm": 1.0})
         self.assertEqual(world["tower_self_cond_prob"], 0.0)
 
         uw = cfg.curriculum_data_settings_for_step(50_000)
@@ -127,7 +127,7 @@ class CurriculumConfigTest(unittest.TestCase):
         sft = cfg.curriculum_data_settings_for_step(410_000)
         self.assertEqual(sft["stage"], "unified_sft")
         self.assertEqual(sft["gradient_accumulation_steps"], 2)
-        self.assertEqual(sft["loss_weights"], {"ce": 1.0, "fm": 0.1})
+        self.assertEqual(sft["loss_weights"], {"ce": 1.0, "fm": 0.005})
         self.assertEqual(sft["cfg_label_drop_prob"], 0.10)
 
 

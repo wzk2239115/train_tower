@@ -135,6 +135,11 @@ class JepaTowerExit(nn.Module):
         )
         for p_tgt, p_pred in zip(self.target_projector.parameters(), self.predictor.parameters()):
             p_tgt.data.copy_(p_pred.data)
+            # Break initial symmetry so the EMA target starts tracking from
+            # step 1. With an exact copy, the first EMA update is a mathematical
+            # no-op (m + (1-m) == 1.0 when target == predictor), leaving the
+            # predictor/target collapsed and providing no learning signal.
+            p_tgt.data.add_(torch.randn_like(p_tgt.data) * 0.02)
         for p in self.target_projector.parameters():
             p.requires_grad_(False)
 
@@ -166,6 +171,13 @@ class JepaTowerExit(nn.Module):
         pred = self.predictor(h[pm])
         with torch.no_grad():
             target = self.target_projector(tgt[pm]).detach()
+        # L2-normalize predictions and targets (BYOL-style) to make this a
+        # cosine-distance objective. Without it, the predictor can trivially
+        # collapse its output toward zero (or a constant) since the target is
+        # detached — there is no contrastive negative. Normalization keeps the
+        # objective on the unit hypersphere, forcing meaningful representation.
+        pred = F.normalize(pred, dim=-1)
+        target = F.normalize(target, dim=-1)
         return torch.mean((pred - target) ** 2)
 
 
@@ -186,6 +198,8 @@ class CeTowerExit(nn.Module):
         labels: torch.Tensor,
     ) -> torch.Tensor:
         if hidden.numel() == 0:
+            return hidden.sum() * 0.0
+        if not (labels != -100).any():
             return hidden.sum() * 0.0
         logits = self.head(hidden)
         return F.cross_entropy(logits, labels, ignore_index=-100)

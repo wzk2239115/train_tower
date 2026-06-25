@@ -32,9 +32,9 @@ class ExperimentProfileTest(unittest.TestCase):
         cfg = load_train_config_from_experiment("500m_continuous")
         self.assertEqual(cfg.experiment_profile, "500m_continuous")
         self.assertEqual(cfg.size_preset, "500m")
-        self.assertEqual(cfg.max_steps, 420_000)
+        self.assertEqual(cfg.max_steps, 42_000)
         self.assertEqual(len(cfg.curriculum), 5)
-        self.assertEqual(cfg.output_dir, "outputs/pretrain/500m_continuous")
+        self.assertEqual(cfg.output_dir, "outputs/pretrain/500m_super_omni")
 
     def test_tiny_smoke_profile_overrides(self) -> None:
         cfg = load_train_config_from_experiment("tiny_smoke")
@@ -56,15 +56,15 @@ class ExperimentProfileTest(unittest.TestCase):
         self.assertEqual(len(boundaries), 5)
         self.assertEqual(boundaries[0].stage, "world_pt")
         self.assertEqual(boundaries[0].start_step, 0)
-        self.assertEqual(boundaries[0].end_step, 49_999)
-        self.assertEqual(boundaries[0].step_count, 50_000)
+        self.assertEqual(boundaries[0].end_step, 4_999)
+        self.assertEqual(boundaries[0].step_count, 5_000)
 
         self.assertEqual(boundaries[1].stage, "understanding_warmup")
-        self.assertEqual(boundaries[1].start_step, 50_000)
-        self.assertEqual(boundaries[1].end_step, 249_999)
+        self.assertEqual(boundaries[1].start_step, 5_000)
+        self.assertEqual(boundaries[1].end_step, 24_999)
 
         self.assertEqual(boundaries[-1].stage, "unified_sft")
-        self.assertEqual(boundaries[-1].end_step, 419_999)
+        self.assertEqual(boundaries[-1].end_step, 41_999)
 
     def test_tiny_smoke_stage_boundaries(self) -> None:
         cfg = load_train_config_from_experiment("tiny_smoke")
