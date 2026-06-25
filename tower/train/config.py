@@ -107,6 +107,7 @@ class TrainConfig:
     max_audio_duration_ms: int = 5000
     max_video_frames_gen: int = 16
     attn_implementation: str = "sdpa"
+    smart_packing: bool = True
     # Step-based curriculum. Each item requires stage + until_step; optional overrides:
     # max_seq_length, max_pixels, min_pixels, per_device_train_batch_size,
     # gradient_accumulation_steps, datasets, learning_rate, loss_weights, task_override

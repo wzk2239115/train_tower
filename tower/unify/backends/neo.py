@@ -39,6 +39,12 @@ def import_train_arguments():
     return DataArguments, TrainingArguments
 
 
+def import_smart_resize():
+    from tower.neo.data.utils import smart_resize
+
+    return smart_resize
+
+
 def all_special_token_list() -> list[str]:
     """NEO special tokens for tokenizer extension (re-export of ``constants``)."""
     return list(import_data_constants().ALL_SPECIAL_TOKEN_LIST)
@@ -60,5 +66,6 @@ __all__ = [
     "import_flattened_data_collator",
     "import_lazy_supervised_dataset",
     "import_neo_data",
+    "import_smart_resize",
     "import_train_arguments",
 ]

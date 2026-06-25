@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import math
 import random
 from pathlib import Path
 from typing import Any
@@ -171,6 +172,134 @@ class UnifiedTrainDataset:
             else:
                 video = torch.nn.functional.pad(video, (0, target_dim - video.shape[-1]))
         return video.contiguous()
+
+    # ------------------------------------------------------------------ #
+    #  Token-length estimation for smart packing                          #
+    # ------------------------------------------------------------------ #
+
+    def estimate_token_lengths(self) -> list[int]:
+        """Quickly estimate token count for every sample without loading media.
+
+        Uses stored image width/height when available to compute exact image
+        context token counts via ``smart_resize``; otherwise falls back to a
+        configurable average.
+        """
+        patch_size = self.cfg.patch_size
+        downsample_ratio = self.cfg.downsample_ratio
+        min_pixels = self.cfg.min_pixels
+        max_pixels = self.cfg.max_pixels
+        size_factor = int(patch_size / downsample_ratio)
+
+        video_tokens_per_frame = 256
+        video_num_frames = getattr(self.cfg, "video_num_frames", 16)
+        audio_max_patches = getattr(self.cfg, "audio_max_patches", 256)
+        avg_image_tokens = int(
+            max_pixels // (patch_size ** 2) * downsample_ratio ** 2 * 0.25
+        )
+        avg_image_tokens = max(avg_image_tokens, 64)
+
+        lengths: list[int] = []
+        for sample in self._base.list_data_dict:
+            lengths.append(
+                self._estimate_single_length(
+                    sample,
+                    patch_size=patch_size,
+                    downsample_ratio=downsample_ratio,
+                    min_pixels=min_pixels,
+                    max_pixels=max_pixels,
+                    size_factor=size_factor,
+                    avg_image_tokens=avg_image_tokens,
+                    audio_max_patches=audio_max_patches,
+                    video_tokens_per_frame=video_tokens_per_frame,
+                    video_num_frames=video_num_frames,
+                )
+            )
+        return lengths
+
+    @staticmethod
+    def _estimate_image_tokens(
+        width: int,
+        height: int,
+        size_factor: int,
+        min_pixels: int,
+        max_pixels: int,
+        patch_size: int,
+        downsample_ratio: float,
+    ) -> int:
+        from tower.unify.backends import import_smart_resize
+
+        smart_resize = import_smart_resize()
+        rh, rw = smart_resize(
+            height, width,
+            factor=size_factor,
+            min_pixels=min_pixels,
+            max_pixels=max_pixels,
+        )
+        return int(rw * rh // patch_size ** 2 * downsample_ratio ** 2)
+
+    def _estimate_single_length(
+        self,
+        sample: Any,
+        *,
+        patch_size: int,
+        downsample_ratio: float,
+        min_pixels: int,
+        max_pixels: int,
+        size_factor: int,
+        avg_image_tokens: int,
+        audio_max_patches: int,
+        video_tokens_per_frame: int,
+        video_num_frames: int,
+    ) -> int:
+        if not isinstance(sample, dict):
+            return avg_image_tokens + 128
+
+        text_chars = 0
+        for conv in sample.get("conversations", []):
+            text_chars += len(conv.get("value", ""))
+        est_text_tokens = max(8, text_chars // 3)
+
+        image_paths = sample.get("image") or sample.get("images")
+        if image_paths is not None:
+            image_paths = image_paths if isinstance(image_paths, list) else [image_paths]
+        else:
+            image_paths = []
+        num_images = len(image_paths)
+
+        image_tokens = 0
+        if num_images > 0:
+            w = sample.get("width")
+            h = sample.get("height")
+            if isinstance(w, int) and isinstance(h, int) and w > 0 and h > 0:
+                per_image_max = max_pixels
+                if num_images > 1:
+                    per_image_max = max(max_pixels * 2 // num_images, min_pixels)
+                image_tokens = self._estimate_image_tokens(
+                    w, h, size_factor, min_pixels, per_image_max,
+                    patch_size, downsample_ratio,
+                )
+                if num_images > 1:
+                    remaining = num_images - 1
+                    image_tokens += remaining * max(
+                        image_tokens // 2,
+                        int(min_pixels // patch_size ** 2 * downsample_ratio ** 2),
+                    )
+            else:
+                image_tokens = num_images * avg_image_tokens
+
+        audio_paths = sample.get("audio") or sample.get("audios")
+        num_audio = 0 if not audio_paths else (
+            len(audio_paths) if isinstance(audio_paths, list) else 1
+        )
+        audio_tokens = num_audio * audio_max_patches
+
+        video_paths = sample.get("video") or sample.get("videos")
+        num_video = 0 if not video_paths else (
+            len(video_paths) if isinstance(video_paths, list) else 1
+        )
+        video_tokens = num_video * video_num_frames * video_tokens_per_frame
+
+        return est_text_tokens + image_tokens + audio_tokens + video_tokens
 
 
 def rebuild_unified_dataset_base(

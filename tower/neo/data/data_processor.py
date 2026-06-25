@@ -434,9 +434,6 @@ class FlattenedDataCollatorForSupervisedDataset:
 
                 num_removed_images = len(pixel_values) - len(new_pixel_values)
                 pixel_values = new_pixel_values
-                print(
-                    f"Removed {num_removed_images} images from {len(truncated_instances)} instances affected by truncation"
-                )
 
             img_start_id = self.tokenizer.convert_tokens_to_ids(IMG_START_TOKEN)
             num_image_slots = int((input_ids == img_start_id).sum().item())
@@ -447,14 +444,15 @@ class FlattenedDataCollatorForSupervisedDataset:
 
             self.abnormal_samples += 1
 
-            print(
-                f"Abnormal/Total: {self.abnormal_samples}/{self.total_samples}, "
-                f"Batch Size: {self.training_args.per_device_train_batch_size}, "
-                f"Packed sequence length: {packed_seq_length}, "
-                f"max_seq_length: {self.data_args.max_seq_length}, "
-                f"Truncate position: {truncate_pos}, "
-                f"Final sequence length: {input_ids.size(0)}",
-            )
+            if self.abnormal_samples % 100 == 0:
+                print(
+                    f"Abnormal/Total: {self.abnormal_samples}/{self.total_samples}, "
+                    f"Batch Size: {self.training_args.per_device_train_batch_size}, "
+                    f"Packed sequence length: {packed_seq_length}, "
+                    f"max_seq_length: {self.data_args.max_seq_length}, "
+                    f"Truncate position: {truncate_pos}, "
+                    f"Final sequence length: {input_ids.size(0)}",
+                )
 
         seq_boundaries, token_indexes, token_weights = (
             self.compute_packed_sequence_metadata(

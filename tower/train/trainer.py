@@ -110,6 +110,71 @@ class TowerTrainer(Trainer):
             target_model.load_state_dict(wrapper_state, strict=False)
             logger.info("Loaded full wrapper state from %s", wrapper_ckpt)
 
+    def _get_train_sampler(self):
+        """Return a LengthAwarePackSampler when smart packing is enabled."""
+        cfg = getattr(self, "_tower_cfg", None)
+        if cfg is None or not getattr(cfg, "smart_packing", False):
+            return super()._get_train_sampler()
+
+        from torch.utils.data import BatchSampler
+
+        from tower.train.pack_sampler import LengthAwarePackSampler
+
+        dataset = self.train_dataset
+        max_seq_length = cfg.max_seq_length
+        world_size = max(1, self.args.world_size)
+        rank = self.args.process_index
+
+        phase = cfg.curriculum_phase_index_for_step(self.state.global_step) if cfg.curriculum else 0
+        if cfg.curriculum:
+            settings = cfg.curriculum_data_settings_for_step(self.state.global_step)
+            max_seq_length = settings.get("max_seq_length", max_seq_length)
+
+        lengths = dataset.estimate_token_lengths()
+
+        sampler = LengthAwarePackSampler(
+            lengths=lengths,
+            max_seq_length=max_seq_length,
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=True,
+            seed=cfg.seed,
+        )
+        self._pack_sampler = sampler
+
+        eff = sampler.stats.get("efficiency", 0)
+        avg_ps = sampler.stats.get("avg_pack_size", 0)
+        logger.info(
+            "LengthAwarePackSampler: %d packs, avg %.1f samples/pack, "
+            "%.1f%% fill efficiency (max_seq=%d, %d total samples)",
+            len(sampler),
+            avg_ps,
+            eff * 100,
+            max_seq_length,
+            len(lengths),
+        )
+        return sampler
+
+    def get_train_dataloader(self):
+        """Use BatchSampler directly when smart packing is enabled."""
+        cfg = getattr(self, "_tower_cfg", None)
+        if cfg is None or not getattr(cfg, "smart_packing", False):
+            return super().get_train_dataloader()
+
+        from torch.utils.data import BatchSampler, DataLoader
+
+        sampler = self._get_train_sampler()
+        if not isinstance(sampler, BatchSampler):
+            return super().get_train_dataloader()
+
+        return DataLoader(
+            self.train_dataset,
+            batch_sampler=sampler,
+            collate_fn=self.data_collator,
+            num_workers=self.args.dataloader_num_workers,
+            pin_memory=self.args.dataloader_pin_memory,
+        )
+
 
 def safe_save_model_for_hf_trainer(trainer: Trainer, output_dir: str):
     if trainer.deepspeed:
@@ -361,6 +426,7 @@ def run_training(cfg: TrainConfig) -> None:
         callbacks=callbacks,
         **data_module,
     )
+    trainer._tower_cfg = cfg
 
     preflight_steps = int(os.environ.get("TOWER_DATALOADER_PREFLIGHT_STEPS", "0") or 0)
     _run_dataloader_preflight(trainer, preflight_steps)
