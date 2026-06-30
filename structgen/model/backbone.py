@@ -331,6 +331,12 @@ class StepfunBackbone(BackboneAdapter):
         except Exception:
             proc = None
         object.__setattr__(self, "_processor", proc)
+        # use the tokenizer directly (the Step3 custom processor doesn't pad
+        # text-only lists correctly); tokenizers ALWAYS pad with padding=True.
+        tok = getattr(proc, "tokenizer", None)
+        if tok is None:
+            tok = _tf.AutoTokenizer.from_pretrained(path, trust_remote_code=True)
+        object.__setattr__(self, "_tokenizer", tok)
         hidden = getattr(model.config, "text_config", model.config).hidden_size
         object.__setattr__(self, "_hidden", hidden)
         # projection is trainable → registered normally, lives on the decoder GPU
@@ -389,16 +395,18 @@ class StepfunBackbone(BackboneAdapter):
 
         # ---- TEXT through the 198B backbone (batched, no images → no
         # placeholder mismatch; short sequences → cheap) ----
+        tok = self._tokenizer
         messages = [[{"role": "user", "content": [{"type": "text", "text": t}]}]
                     for t in texts]
-        chat_texts = [self._processor.apply_chat_template(
-            m, add_generation_prompt=True, tokenize=False) for m in messages]
-        proc_inputs = self._processor(text=chat_texts, return_tensors="pt", padding=True)
-        attn = proc_inputs.get("attention_mask")
-        proc_inputs = {k: (v.to(in_device) if torch.is_tensor(v) else v)
-                       for k, v in proc_inputs.items()}
+        chat_texts = [tok.apply_chat_template(m, add_generation_prompt=True,
+                                              tokenize=False) for m in messages]
+        enc = tok(chat_texts, return_tensors="pt", padding=True,
+                  truncation=True, max_length=512)
+        attn = enc.get("attention_mask")
+        enc = {k: (v.to(in_device) if torch.is_tensor(v) else v)
+               for k, v in enc.items()}
         with torch.no_grad():
-            self._model(**proc_inputs, use_cache=False)
+            self._model(**enc, use_cache=False)
         pooled = self._masked_mean_pool(self._captured_hidden[0], attn, proj_device)
         # (B, hidden=4096) → project
 
