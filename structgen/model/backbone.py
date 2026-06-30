@@ -221,6 +221,8 @@ class StepfunBackbone(BackboneAdapter):
     def _build(self, device: torch.device) -> None:
         if self._model is not None:
             return
+        import time
+
         import transformers as _tf
         path = self.pretrained_path
         # 198B MoE ≈ 396GB in bf16 → must shard across all visible GPUs.
@@ -228,10 +230,23 @@ class StepfunBackbone(BackboneAdapter):
         n_gpu = torch.cuda.device_count() or 1
         max_memory = {i: "72GiB" for i in range(n_gpu)}
         max_memory["cpu"] = "800GiB"
+        print(f"[stepfun] loading {path} on {n_gpu} GPU(s) "
+              f"(device_map=auto, ~396GB bf16, this reads from disk once per run)...")
+        t0 = time.time()
         model = _tf.AutoModelForCausalLM.from_pretrained(
             path, dtype=torch.bfloat16, trust_remote_code=True,
             device_map="auto", max_memory=max_memory, low_cpu_mem_usage=True,
         )
+        # report placement: confirm the model actually spans multiple GPUs
+        dm = getattr(model, "hf_device_map", {})
+        from collections import Counter
+
+        if dm:
+            per_gpu = Counter(str(v) for v in dm.values())
+            print(f"[stepfun] loaded in {time.time() - t0:.0f}s, spans {len(per_gpu)} device(s): "
+                  + ", ".join(f"{k}:{v} modules" for k, v in sorted(per_gpu.items())))
+        else:
+            print(f"[stepfun] loaded in {time.time() - t0:.0f}s")
         model.eval()
         for p in model.parameters():
             p.requires_grad_(False)
