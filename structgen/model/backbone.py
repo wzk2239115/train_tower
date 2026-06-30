@@ -326,11 +326,45 @@ class StepfunBackbone(BackboneAdapter):
         # projection is trainable → registered normally, lives on the decoder GPU
         self._proj = _TextOnlyProjection(hidden, self.cond_dim,
                                          self.n_cond_tokens).to(device)
+        # output_hidden_states isn't reliably forwarded by the remote code, so
+        # capture the LLM's last-layer output via a forward hook instead.
+        self._install_last_layer_hook(model)
+
+    def _install_last_layer_hook(self, model) -> None:
+        import torch.nn as _nn
+
+        # find the LLM transformer-layer ModuleList (skip the vision encoder):
+        # prefer a list whose name contains language/text/llm, length >= 10.
+        best = None  # (score, name, module_list)
+        for name, mod in model.named_modules():
+            if not isinstance(mod, _nn.ModuleList) or len(mod) < 10:
+                continue
+            low = name.lower()
+            if any(k in low for k in ("vision", "image", "visual", "encoder")):
+                continue
+            score = len(mod) + (200 if "language" in low else
+                                (150 if "text" in low or "llm" in low else 0))
+            if best is None or score > best[0]:
+                best = (score, name, mod)
+        if best is None:
+            raise RuntimeError("could not locate the LLM layer list for hook")
+        last = best[2][-1]
+        captured: list = []
+        object.__setattr__(self, "_captured_hidden", captured)
+
+        def _hook(_module, _inp, out):
+            h = out[0] if isinstance(out, (tuple, list)) else out
+            if hasattr(h, "last_hidden_state"):
+                h = h.last_hidden_state
+            captured.clear()
+            captured.append(h)
+
+        last.register_forward_hook(_hook)
+        print(f"[stepfun] hidden-state hook on {best[1]}[{len(best[2]) - 1}]")
 
     def forward(self, prompt, sketch=None, ref_image=None) -> ConditionOutput:
         self._build(self._device_marker.device)
         proj_device = self._device_marker.device
-        # device_map="auto" → accelerate dispatches inputs to the right GPU
         in_device = next(self._model.parameters()).device
         texts = [prompt] if isinstance(prompt, str) else list(prompt)
         feats_list = []
@@ -347,9 +381,8 @@ class StepfunBackbone(BackboneAdapter):
             proc_inputs = {k: (v.to(in_device) if torch.is_tensor(v) else v)
                            for k, v in proc_inputs.items()}
             with torch.no_grad():
-                out = self._model(**proc_inputs, output_hidden_states=True,
-                                  use_cache=False)
-            h = out.hidden_states[-1]  # (1, L, hidden)
+                self._model(**proc_inputs, use_cache=False)
+            h = self._captured_hidden[0]  # (1, L, hidden) from the hook
             feats_list.append(h.float().to(proj_device))
         feats = torch.cat(feats_list, dim=0)  # (B, L, hidden) on proj_device
         return self._proj(feats)
