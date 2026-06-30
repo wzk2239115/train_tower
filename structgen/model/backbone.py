@@ -270,6 +270,8 @@ class StepfunBackbone(BackboneAdapter):
         self._model = None
         self._processor = None
         self._proj = None
+        # prompt -> cached raw text embedding (1, hidden); frozen backbone
+        self._text_cache: dict = {}
         # Sketch is encoded by a small trainable CNN (cheap); the 198B backbone
         # encodes the TEXT only. Rationale: text batches cleanly with no image-
         # placeholder issues and is ~7x cheaper than routing 728x728 sketches
@@ -331,12 +333,6 @@ class StepfunBackbone(BackboneAdapter):
         except Exception:
             proc = None
         object.__setattr__(self, "_processor", proc)
-        # use the tokenizer directly (the Step3 custom processor doesn't pad
-        # text-only lists correctly); tokenizers ALWAYS pad with padding=True.
-        tok = getattr(proc, "tokenizer", None)
-        if tok is None:
-            tok = _tf.AutoTokenizer.from_pretrained(path, trust_remote_code=True)
-        object.__setattr__(self, "_tokenizer", tok)
         hidden = getattr(model.config, "text_config", model.config).hidden_size
         object.__setattr__(self, "_hidden", hidden)
         # projection is trainable → registered normally, lives on the decoder GPU
@@ -387,28 +383,50 @@ class StepfunBackbone(BackboneAdapter):
         m = attention_mask.float().to(proj_device).unsqueeze(-1)  # (B,L,1)
         return (h * m).sum(dim=1) / m.sum(dim=1).clamp_min(1.0)
 
+    def _encode_text_one(self, text: str, in_device: torch.device,
+                         proj_device: torch.device) -> torch.Tensor:
+        """Encode a SINGLE prompt (batch=1) → mean-pooled (1, hidden) vector.
+
+        Batch=1 avoids the Step3p7 RoPE shape bug that appears with batched
+        padded inputs. This is the exact path verified to work in the probe.
+        """
+        msg = [{"role": "user", "content": [{"type": "text", "text": text}]}]
+        chat = self._processor.apply_chat_template(
+            msg, add_generation_prompt=True, tokenize=False)
+        enc = self._processor(text=chat, return_tensors="pt", padding=True)
+        attn = enc.get("attention_mask")
+        enc = {k: (v.to(in_device) if torch.is_tensor(v) else v) for k, v in enc.items()}
+        with torch.no_grad():
+            self._model(**enc, use_cache=False)
+        return self._masked_mean_pool(self._captured_hidden[0], attn, proj_device)
+
     def forward(self, prompt, sketch=None, ref_image=None) -> ConditionOutput:
         self._build(self._device_marker.device)
         proj_device = self._device_marker.device
         in_device = next(self._model.parameters()).device
         texts = [prompt] if isinstance(prompt, str) else list(prompt)
 
-        # ---- TEXT through the 198B backbone (batched, no images → no
-        # placeholder mismatch; short sequences → cheap) ----
-        tok = self._tokenizer
-        messages = [[{"role": "user", "content": [{"type": "text", "text": t}]}]
-                    for t in texts]
-        chat_texts = [tok.apply_chat_template(m, add_generation_prompt=True,
-                                              tokenize=False) for m in messages]
-        enc = tok(chat_texts, return_tensors="pt", padding=True,
-                  truncation=True, max_length=512)
-        attn = enc.get("attention_mask")
-        enc = {k: (v.to(in_device) if torch.is_tensor(v) else v)
-               for k, v in enc.items()}
-        with torch.no_grad():
-            self._model(**enc, use_cache=False)
-        pooled = self._masked_mean_pool(self._captured_hidden[0], attn, proj_device)
-        # (B, hidden=4096) → project
+        # ---- TEXT: per-sample (batch=1) with a prompt→embedding cache.
+        # The backbone is FROZEN so the pooled text vector for a given prompt is
+        # constant; there are only a handful of distinct prompts, so after a
+        # short warmup the 198B forward runs ZERO times per step. We cache the
+        # raw (1,hidden) vector (before the trainable projection). ----
+        cache: dict = self._text_cache
+        pooled_list = []
+        uncached = 0
+        for t in texts:
+            v = cache.get(t)
+            if v is None:
+                v = self._encode_text_one(t, in_device, proj_device).detach()
+                cache[t] = v
+                uncached += 1
+            pooled_list.append(v)
+        if uncached:
+            print(f"[stepfun] encoded {uncached} new prompt(s) "
+                  f"(cache now holds {len(cache)})")
+        pooled = torch.cat(pooled_list, dim=0)  # (B, hidden=4096)
+
+        cond = self._proj(pooled)  # (B, cond_dim) — _TextOnlyProjection → tokens+pooled
 
         # ---- SKETCH via the small trainable CNN (on proj_device) ----
         if sketch is not None:
@@ -417,16 +435,11 @@ class StepfunBackbone(BackboneAdapter):
             if sk.shape[-1] != self.image_size:
                 sk = _F.interpolate(sk, size=self.image_size, mode="bilinear",
                                     align_corners=False)
-            sk_feat = self.sketch_cnn(sk).flatten(2).transpose(1, 2)  # (B,1,cond_dim)
-            sk_feat = self.sketch_proj(sk_feat)
-            # fold sketch into the pooled text vector (after text proj, see below)
-
-        cond = self._proj(pooled)  # (B, cond_dim) — _TextOnlyProjection → tokens+pooled
-        if sketch is not None:
-            # add sketch feature to every emitted token (lightweight conditioning)
-            cond_tokens = cond.tokens + sk_feat  # broadcast over token dim
-            cond_pooled = cond.pooled + sk_feat.squeeze(1)
-            return ConditionOutput(tokens=cond_tokens, pooled=cond_pooled)
+            sk_feat = self.sketch_proj(self.sketch_cnn(sk).flatten(2).transpose(1, 2))
+            return ConditionOutput(
+                tokens=cond.tokens + sk_feat,
+                pooled=cond.pooled + sk_feat.squeeze(1),
+            )
         return cond
 
 
