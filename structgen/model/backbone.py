@@ -362,30 +362,62 @@ class StepfunBackbone(BackboneAdapter):
         last.register_forward_hook(_hook)
         print(f"[stepfun] hidden-state hook on {best[1]}[{len(best[2]) - 1}]")
 
+    def _masked_mean_pool(self, h: torch.Tensor, attention_mask: torch.Tensor | None,
+                          proj_device: torch.device) -> torch.Tensor:
+        """Mean-pool (B,L,hidden) → (B,hidden), ignoring padding positions."""
+        h = h.float().to(proj_device)
+        if attention_mask is None:
+            return h.mean(dim=1)
+        m = attention_mask.float().to(proj_device).unsqueeze(-1)  # (B,L,1)
+        return (h * m).sum(dim=1) / m.sum(dim=1).clamp_min(1.0)
+
     def forward(self, prompt, sketch=None, ref_image=None) -> ConditionOutput:
         self._build(self._device_marker.device)
         proj_device = self._device_marker.device
         in_device = next(self._model.parameters()).device
         texts = [prompt] if isinstance(prompt, str) else list(prompt)
-        feats_list = []
-        for i, txt in enumerate(texts):
+        B = len(texts)
+
+        messages = []
+        for txt in texts:
             content = [{"type": "text", "text": txt}]
             if sketch is not None:
                 content.append({"type": "image"})
-            msg = [{"role": "user", "content": content}]
-            proc_inputs = self._processor(
-                images=_to_pil(sketch[i]) if sketch is not None else None,
-                text=self._processor.apply_chat_template(
-                    msg, add_generation_prompt=True, tokenize=False),
-                return_tensors="pt", padding=True)
+            messages.append([{"role": "user", "content": content}])
+        chat_texts = [self._processor.apply_chat_template(
+            m, add_generation_prompt=True, tokenize=False) for m in messages]
+
+        try:
+            # ---- fast path: one batched forward (processor pads + masks) ----
+            if sketch is not None:
+                images = [_to_pil(sketch[i]) for i in range(B)]
+                proc_inputs = self._processor(text=chat_texts, images=images,
+                                              return_tensors="pt", padding=True)
+            else:
+                proc_inputs = self._processor(text=chat_texts,
+                                              return_tensors="pt", padding=True)
+            attn = proc_inputs.get("attention_mask")
             proc_inputs = {k: (v.to(in_device) if torch.is_tensor(v) else v)
                            for k, v in proc_inputs.items()}
             with torch.no_grad():
                 self._model(**proc_inputs, use_cache=False)
-            h = self._captured_hidden[0]  # (1, L, hidden) from the hook
-            feats_list.append(h.float().to(proj_device))
-        feats = torch.cat(feats_list, dim=0)  # (B, L, hidden) on proj_device
-        return self._proj(feats)
+            pooled = self._masked_mean_pool(self._captured_hidden[0], attn, proj_device)
+            return self._proj(pooled)
+        except Exception as e:
+            # ---- fallback: per-sample forward (robust to batching issues) ----
+            print(f"[stepfun] batched forward failed ({e!r}); falling back to per-sample")
+            feats = []
+            for i in range(B):
+                one: dict = {"text": chat_texts[i], "return_tensors": "pt"}
+                if sketch is not None:
+                    one["images"] = _to_pil(sketch[i])
+                inp = self._processor(**one)
+                am = inp.get("attention_mask")
+                inp = {k: (v.to(in_device) if torch.is_tensor(v) else v) for k, v in inp.items()}
+                with torch.no_grad():
+                    self._model(**inp, use_cache=False)
+                feats.append(self._masked_mean_pool(self._captured_hidden[0], am, proj_device))
+            return self._proj(torch.cat(feats, dim=0))
 
 
 def _to_pil(t: torch.Tensor):
