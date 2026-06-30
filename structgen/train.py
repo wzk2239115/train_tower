@@ -67,6 +67,7 @@ def train(cfg: StructGenConfig, smoke_steps: int | None = None) -> str:
         num_samples=cfg.num_samples,
         image_size=cfg.backbone.image_size,
         seed=cfg.seed,
+        real_data_dir=cfg.real_data_dir,
     )
     if ddp:
         sampler = DistributedSampler(ds, num_replicas=world, rank=rank,

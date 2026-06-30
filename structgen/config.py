@@ -91,3 +91,4 @@ class StructGenConfig:
     # data synthesis
     num_samples: int = 2048  # synthetic structures to generate
     surface_samples: int = 2048  # points sampled on GT surface for Chamfer
+    real_data_dir: str | None = None  # ABC .npz dir (from convert-abc); None=synthesize

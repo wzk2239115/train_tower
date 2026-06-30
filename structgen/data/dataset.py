@@ -44,7 +44,8 @@ class StructGenDataset(Dataset):
 
     def __init__(self, grid_res: int = 64, surface_samples: int = 2048,
                  num_samples: int = 2048, image_size: int = 224,
-                 smooth: float = 0.1, seed: int = 0, augment: bool = True):
+                 smooth: float = 0.1, seed: int = 0, augment: bool = True,
+                 real_data_dir: str | None = None):
         super().__init__()
         self.grid_res = grid_res
         self.surface_samples = surface_samples
@@ -52,10 +53,16 @@ class StructGenDataset(Dataset):
         self.smooth = smooth
         self.augment = augment
         self._rng = np.random.default_rng(seed)
-        # recipe bank is the "class" of structures; we index into it (with
-        # random parameter jitter) to produce ``num_samples`` items
         self.recipes = sampler.all_recipes()
         self.num_samples = num_samples
+        # real ABC .npz files (from `structgen convert-abc`); when set, these
+        # replace the synthetic recipe bank as the data source.
+        self.real_files: list[str] = []
+        if real_data_dir:
+            import glob
+            import os
+            self.real_files = sorted(glob.glob(os.path.join(real_data_dir, "*.npz")))
+            self.num_samples = len(self.real_files) or num_samples
 
     def __len__(self) -> int:
         return self.num_samples
@@ -77,6 +84,8 @@ class StructGenDataset(Dataset):
         return rp
 
     def __getitem__(self, idx: int) -> dict:
+        if self.real_files:
+            return self._get_real(idx)
         rp = self._jittered_recipe(idx)
         field = sampler.build_field(rp, self.grid_res, smooth=self.smooth)
         occ = sampler.occupancy_from_sdf(field)
@@ -91,6 +100,33 @@ class StructGenDataset(Dataset):
             "prompt": rp.prompt,
             "sketch": sketch_t,
             "params": rp,
+        }
+
+    def _get_real(self, idx: int) -> dict:
+        import io
+
+        from PIL import Image
+
+        path = self.real_files[idx % len(self.real_files)]
+        d = np.load(path, allow_pickle=True)
+        field = d["field"].astype(np.float32)
+        # resample surface points to the requested count
+        surf = d["surface"].astype(np.float32)
+        if len(surf) != self.surface_samples:
+            r = self._rng.integers(0, len(surf), size=self.surface_samples)
+            surf = surf[r]
+        occ = (field < 0).astype(np.float32)
+        field_ch = np.stack([field, occ], axis=0)
+        # decode stored sketch PNG
+        img = Image.open(io.BytesIO(d["sketch_png"].tobytes())).convert("RGB")
+        sketch_t = sketch_to_tensor(img, self.image_size)
+        prompt = str(d["prompt"]) if "prompt" in d else "a mechanical CAD part"
+        return {
+            "field": torch.from_numpy(field_ch).float(),
+            "surface": torch.from_numpy(surf).float(),
+            "prompt": prompt,
+            "sketch": sketch_t,
+            "params": None,
         }
 
 

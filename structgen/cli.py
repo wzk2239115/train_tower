@@ -46,6 +46,7 @@ def _build_cfg(args) -> StructGenConfig:
     )
     cfg.num_samples = g("num_samples", 2048)
     cfg.surface_samples = g("surface_samples", 2048)
+    cfg.real_data_dir = g("real_data_dir", None)
     return cfg
 
 
@@ -87,11 +88,71 @@ def cmd_generate(args) -> int:
     return 0
 
 
+def cmd_convert_abc(args) -> int:
+    """Convert a directory of ABC STL meshes → per-model .npz (field+surface+
+    prompt) ready for StructGenDataset. Extract the ``.7z`` first (py7zr)."""
+    import glob
+    import os
+
+    import numpy as np
+
+    from structgen.data.mesh_to_sdf import mesh_to_sdf, prompt_from_stats
+    from structgen.data.stl_io import read_stl
+    from structgen.data.dataset import _render_sketch
+
+    src = args.input
+    out_dir = args.out_dir
+    os.makedirs(out_dir, exist_ok=True)
+
+    # accept a .7z directly → extract beside it
+    if src.lower().endswith(".7z"):
+        import py7zr
+        ex = os.path.join(os.path.dirname(src) or ".",
+                          os.path.basename(src).replace(".7z", ""))
+        if not os.path.isdir(ex):
+            print(f"[convert-abc] extracting {src} -> {ex}")
+            with py7zr.SevenZipFile(src, mode="r") as z:
+                z.extractall(ex)
+        src = ex
+
+    stls = sorted(glob.glob(os.path.join(src, "**", "*.stl"), recursive=True))
+    print(f"[convert-abc] {len(stls)} STL files under {src} -> {out_dir}")
+    ok = 0
+    for i, stl in enumerate(stls):
+        name = os.path.splitext(os.path.basename(stl))[0]
+        out_npz = os.path.join(out_dir, f"{name}.npz")
+        if os.path.exists(out_npz) and not args.force:
+            ok += 1
+            continue
+        try:
+            r = mesh_to_sdf(stl, grid_res=args.res, n_surf=args.surface_samples,
+                            seed=i)
+            if not r["ok"]:
+                continue
+            verts, _, _ = read_stl(stl)
+            prompt = prompt_from_stats(r["field"], verts)
+            sketch = _render_sketch(r["field"], size=args.image_size)
+            import io
+            buf = io.BytesIO()
+            sketch.save(buf, format="PNG")
+            sketch_png = np.frombuffer(buf.getvalue(), dtype=np.uint8)
+            np.savez_compressed(out_npz,
+                                field=r["field"], surface=r["surface"],
+                                normals=r["normals"], prompt=prompt,
+                                sketch_png=sketch_png)
+            ok += 1
+        except Exception as e:  # noqa: BLE001
+            if args.verbose:
+                print(f"  skip {name}: {e!r}")
+            continue
+        if (i + 1) % 200 == 0:
+            print(f"  [{i + 1}/{len(stls)}] converted ok={ok}")
+    print(f"[convert-abc] done: {ok}/{len(stls)} -> {out_dir}")
+    print(f"[convert-abc] train with: --real-data-dir {out_dir}")
+    return 0
+
+
 def cmd_precompute(args) -> int:
-    """Load the 198B backbone once, encode every distinct prompt in the recipe
-    bank, save {prompt: (1, hidden)} to a .pt file. Run this ONCE; afterwards
-    train with --backbone cached --text-emb <this file> (no 198B during training,
-    DDP-safe across 8 GPUs)."""
     import os
     import torch as _torch
     from structgen.data import sampler
@@ -163,6 +224,8 @@ def main(argv=None) -> int:
     t.add_argument("--steps", type=int, default=5000)
     t.add_argument("--num-samples", type=int, default=2048)
     t.add_argument("--surface-samples", type=int, default=2048)
+    t.add_argument("--real-data-dir", default=None,
+                   help="dir of ABC .npz (from convert-abc); overrides synthesis")
     t.add_argument("--out-dir", default="outputs/structgen")
     t.add_argument("--log-every", type=int, default=20)
     t.add_argument("--save-every", type=int, default=1000)
@@ -191,6 +254,17 @@ def main(argv=None) -> int:
     pre.add_argument("--image-size", type=int, default=224)
     pre.add_argument("--out", default="outputs/structgen/text_emb.pt")
     pre.set_defaults(func=cmd_precompute)
+
+    cab = sub.add_parser("convert-abc",
+                         help="ABC STL dir/.7z → per-model .npz (field+surface+prompt) for training")
+    cab.add_argument("--input", required=True, help="dir of *.stl or a .7z file")
+    cab.add_argument("--out-dir", default="data/abc/npz")
+    cab.add_argument("--res", type=int, default=64)
+    cab.add_argument("--surface-samples", type=int, default=4096)
+    cab.add_argument("--image-size", type=int, default=128)
+    cab.add_argument("--force", action="store_true", help="reconvert existing")
+    cab.add_argument("--verbose", action="store_true")
+    cab.set_defaults(func=cmd_convert_abc)
 
     args = p.parse_args(argv)
     return args.func(args)
