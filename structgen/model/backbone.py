@@ -194,19 +194,26 @@ class QwenProxyBackbone(BackboneAdapter):
 
 
 def _patch_causal_mask_compat() -> list[str]:
-    """Wrap every ``create_causal_mask`` reachable in ``sys.modules`` so it
+    """Wrap every mask-creation function reachable in ``sys.modules`` so it
     tolerates extra kwargs (e.g. ``cache_position``) that Step-3.7-Flash's
     remote modeling code passes but the installed transformers may not accept.
 
-    For a full-sequence forward (extracting hidden states, not generation) the
-    dropped kwargs don't affect the causal mask. This is the same spirit as the
-    project's ``tower/unify/compat.py`` masking shim.
+    Covers ``create_causal_mask``, ``create_sliding_window_causal_mask`` and
+    any other ``create_*mask*``/``create_*causal*`` callable. For a full-sequence
+    forward (extracting hidden states, not generation) the dropped kwargs don't
+    affect the mask. Same spirit as the project's ``tower/unify/compat.py`` shim.
     """
     import functools
     import inspect
     import sys
 
     patched: list[str] = []
+
+    def _is_target(name: str) -> bool:
+        if not name.startswith("create_"):
+            return False
+        low = name.lower()
+        return "mask" in low or "causal" in low
 
     def _wrap(fn):
         if getattr(fn, "_structgen_mask_patched", False):
@@ -228,13 +235,14 @@ def _patch_causal_mask_compat() -> list[str]:
     for modname, mod in list(sys.modules.items()):
         if mod is None:
             continue
-        fn = getattr(mod, "create_causal_mask", None)
-        if callable(fn) and not getattr(fn, "_structgen_mask_patched", False):
-            try:
-                setattr(mod, "create_causal_mask", _wrap(fn))
-                patched.append(modname)
-            except Exception:
-                pass
+        names = getattr(mod, "__dict__", {})
+        for name, fn in list(names.items()):
+            if _is_target(name) and callable(fn) and not getattr(fn, "_structgen_mask_patched", False):
+                try:
+                    setattr(mod, name, _wrap(fn))
+                    patched.append(f"{modname}.{name}")
+                except Exception:
+                    pass
     return patched
 
 
