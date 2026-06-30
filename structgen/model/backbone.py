@@ -193,6 +193,51 @@ class QwenProxyBackbone(BackboneAdapter):
         return ConditionOutput(tokens=tokens, pooled=feats.mean(dim=1))
 
 
+def _patch_causal_mask_compat() -> list[str]:
+    """Wrap every ``create_causal_mask`` reachable in ``sys.modules`` so it
+    tolerates extra kwargs (e.g. ``cache_position``) that Step-3.7-Flash's
+    remote modeling code passes but the installed transformers may not accept.
+
+    For a full-sequence forward (extracting hidden states, not generation) the
+    dropped kwargs don't affect the causal mask. This is the same spirit as the
+    project's ``tower/unify/compat.py`` masking shim.
+    """
+    import functools
+    import inspect
+    import sys
+
+    patched: list[str] = []
+
+    def _wrap(fn):
+        if getattr(fn, "_structgen_mask_patched", False):
+            return fn
+        try:
+            params = set(inspect.signature(fn).parameters)
+        except (ValueError, TypeError):
+            params = None
+
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            if params is not None and kwargs:
+                kwargs = {k: v for k, v in kwargs.items() if k in params}
+            return fn(*args, **kwargs)
+
+        wrapper._structgen_mask_patched = True  # type: ignore[attr-defined]
+        return wrapper
+
+    for modname, mod in list(sys.modules.items()):
+        if mod is None:
+            continue
+        fn = getattr(mod, "create_causal_mask", None)
+        if callable(fn) and not getattr(fn, "_structgen_mask_patched", False):
+            try:
+                setattr(mod, "create_causal_mask", _wrap(fn))
+                patched.append(modname)
+            except Exception:
+                pass
+    return patched
+
+
 class StepfunBackbone(BackboneAdapter):
     """Step-3.7-Flash backbone (full weights on the compute box).
 
@@ -226,10 +271,12 @@ class StepfunBackbone(BackboneAdapter):
         import transformers as _tf
         path = self.pretrained_path
         # 198B MoE ≈ 396GB in bf16 → must shard across all visible GPUs.
-        # device_map="auto" distributes layer-by-layer across GPUs.
+        # device_map="auto" distributes layer-by-layer across GPUs. Leave more
+        # headroom on GPU 0 (hosts the trainable decoder + optimizer).
         n_gpu = torch.cuda.device_count() or 1
-        max_memory = {i: "72GiB" for i in range(n_gpu)}
-        max_memory["cpu"] = "800GiB"
+        max_memory = {0: "68GiB"}
+        for i in range(1, n_gpu):
+            max_memory[i] = "78GiB"
         print(f"[stepfun] loading {path} on {n_gpu} GPU(s) "
               f"(device_map=auto, ~396GB bf16, this reads from disk once per run)...")
         t0 = time.time()
@@ -237,16 +284,23 @@ class StepfunBackbone(BackboneAdapter):
             path, dtype=torch.bfloat16, trust_remote_code=True,
             device_map="auto", max_memory=max_memory, low_cpu_mem_usage=True,
         )
+        # compat: tolerate extra mask kwargs (cache_position) from remote code
+        patched = _patch_causal_mask_compat()
+        if patched:
+            print(f"[stepfun] patched create_causal_mask in {len(patched)} module(s) "
+                  f"(compat: {', '.join(patched[:3])}{'…' if len(patched) > 3 else ''})")
         # report placement: confirm the model actually spans multiple GPUs
         dm = getattr(model, "hf_device_map", {})
         from collections import Counter
 
         if dm:
             per_gpu = Counter(str(v) for v in dm.values())
-            print(f"[stepfun] loaded in {time.time() - t0:.0f}s, spans {len(per_gpu)} device(s): "
-                  + ", ".join(f"{k}:{v} modules" for k, v in sorted(per_gpu.items())))
-        else:
-            print(f"[stepfun] loaded in {time.time() - t0:.0f}s")
+            cpu_mods = per_gpu.pop("cpu", 0)
+            print(f"[stepfun] loaded in {time.time() - t0:.0f}s, spans {len(per_gpu)} GPU(s): "
+                  + ", ".join(f"{k}:{v} mods" for k, v in sorted(per_gpu.items())))
+            if cpu_mods:
+                print(f"[stepfun] WARNING: {cpu_mods} modules on CPU (forward will be slow); "
+                      "consider lowering --res/--batch")
         model.eval()
         for p in model.parameters():
             p.requires_grad_(False)
