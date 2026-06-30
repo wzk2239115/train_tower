@@ -270,6 +270,16 @@ class StepfunBackbone(BackboneAdapter):
         self._model = None
         self._processor = None
         self._proj = None
+        # Sketch is encoded by a small trainable CNN (cheap); the 198B backbone
+        # encodes the TEXT only. Rationale: text batches cleanly with no image-
+        # placeholder issues and is ~7x cheaper than routing 728x728 sketches
+        # through the 198B vision encoder every step.
+        self.sketch_cnn = nn.Sequential(
+            nn.Conv2d(3, 32, 4, 2, 1), nn.GELU(),
+            nn.Conv2d(32, 64, 4, 2, 1), nn.GELU(),
+            nn.Conv2d(64, cond_dim, 4, 2, 1), nn.GELU(),
+            nn.AdaptiveAvgPool2d(1))
+        self.sketch_proj = nn.Linear(cond_dim, cond_dim)
 
     def _build(self, device: torch.device) -> None:
         if self._model is not None:
@@ -376,48 +386,40 @@ class StepfunBackbone(BackboneAdapter):
         proj_device = self._device_marker.device
         in_device = next(self._model.parameters()).device
         texts = [prompt] if isinstance(prompt, str) else list(prompt)
-        B = len(texts)
 
-        messages = []
-        for txt in texts:
-            content = [{"type": "text", "text": txt}]
-            if sketch is not None:
-                content.append({"type": "image"})
-            messages.append([{"role": "user", "content": content}])
+        # ---- TEXT through the 198B backbone (batched, no images → no
+        # placeholder mismatch; short sequences → cheap) ----
+        messages = [[{"role": "user", "content": [{"type": "text", "text": t}]}]
+                    for t in texts]
         chat_texts = [self._processor.apply_chat_template(
             m, add_generation_prompt=True, tokenize=False) for m in messages]
+        proc_inputs = self._processor(text=chat_texts, return_tensors="pt", padding=True)
+        attn = proc_inputs.get("attention_mask")
+        proc_inputs = {k: (v.to(in_device) if torch.is_tensor(v) else v)
+                       for k, v in proc_inputs.items()}
+        with torch.no_grad():
+            self._model(**proc_inputs, use_cache=False)
+        pooled = self._masked_mean_pool(self._captured_hidden[0], attn, proj_device)
+        # (B, hidden=4096) → project
 
-        try:
-            # ---- fast path: one batched forward (processor pads + masks) ----
-            if sketch is not None:
-                images = [_to_pil(sketch[i]) for i in range(B)]
-                proc_inputs = self._processor(text=chat_texts, images=images,
-                                              return_tensors="pt", padding=True)
-            else:
-                proc_inputs = self._processor(text=chat_texts,
-                                              return_tensors="pt", padding=True)
-            attn = proc_inputs.get("attention_mask")
-            proc_inputs = {k: (v.to(in_device) if torch.is_tensor(v) else v)
-                           for k, v in proc_inputs.items()}
-            with torch.no_grad():
-                self._model(**proc_inputs, use_cache=False)
-            pooled = self._masked_mean_pool(self._captured_hidden[0], attn, proj_device)
-            return self._proj(pooled)
-        except Exception as e:
-            # ---- fallback: per-sample forward (robust to batching issues) ----
-            print(f"[stepfun] batched forward failed ({e!r}); falling back to per-sample")
-            feats = []
-            for i in range(B):
-                one: dict = {"text": chat_texts[i], "return_tensors": "pt"}
-                if sketch is not None:
-                    one["images"] = _to_pil(sketch[i])
-                inp = self._processor(**one)
-                am = inp.get("attention_mask")
-                inp = {k: (v.to(in_device) if torch.is_tensor(v) else v) for k, v in inp.items()}
-                with torch.no_grad():
-                    self._model(**inp, use_cache=False)
-                feats.append(self._masked_mean_pool(self._captured_hidden[0], am, proj_device))
-            return self._proj(torch.cat(feats, dim=0))
+        # ---- SKETCH via the small trainable CNN (on proj_device) ----
+        if sketch is not None:
+            import torch.nn.functional as _F
+            sk = sketch.to(proj_device)
+            if sk.shape[-1] != self.image_size:
+                sk = _F.interpolate(sk, size=self.image_size, mode="bilinear",
+                                    align_corners=False)
+            sk_feat = self.sketch_cnn(sk).flatten(2).transpose(1, 2)  # (B,1,cond_dim)
+            sk_feat = self.sketch_proj(sk_feat)
+            # fold sketch into the pooled text vector (after text proj, see below)
+
+        cond = self._proj(pooled)  # (B, cond_dim) — _TextOnlyProjection → tokens+pooled
+        if sketch is not None:
+            # add sketch feature to every emitted token (lightweight conditioning)
+            cond_tokens = cond.tokens + sk_feat  # broadcast over token dim
+            cond_pooled = cond.pooled + sk_feat.squeeze(1)
+            return ConditionOutput(tokens=cond_tokens, pooled=cond_pooled)
+        return cond
 
 
 def _to_pil(t: torch.Tensor):
