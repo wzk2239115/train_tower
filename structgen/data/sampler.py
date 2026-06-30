@@ -130,7 +130,13 @@ def sample_surface(field: np.ndarray, n: int, bounds: tuple[float, float] = CUBE
     approx_d = np.abs(field) / gnorm
     # weight near-surface voxels
     w = np.exp(-(approx_d ** 2) / (2 * 0.03 ** 2))
-    w = w / w.sum()
+    w = np.nan_to_num(w, nan=0.0, posinf=0.0, neginf=0.0)
+    tot = w.sum()
+    if not np.isfinite(tot) or tot <= 0:
+        # degenerate field → fall back to uniform sampling
+        w = np.ones_like(w)
+        tot = w.sum()
+    w = w / tot
     flat_idx = rng.choice(w.size, size=n, replace=True, p=w.ravel())
     coords = np.stack(np.unravel_index(flat_idx, field.shape), axis=-1)  # (n,3) int
     pts = np.stack([coords[:, 0], coords[:, 1], coords[:, 2]], axis=-1)

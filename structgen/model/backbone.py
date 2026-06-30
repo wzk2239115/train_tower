@@ -223,28 +223,38 @@ class StepfunBackbone(BackboneAdapter):
             return
         import transformers as _tf
         path = self.pretrained_path
+        # 198B MoE ≈ 396GB in bf16 → must shard across all visible GPUs.
+        # device_map="auto" distributes layer-by-layer across GPUs.
+        n_gpu = torch.cuda.device_count() or 1
+        max_memory = {i: "72GiB" for i in range(n_gpu)}
+        max_memory["cpu"] = "800GiB"
         model = _tf.AutoModelForCausalLM.from_pretrained(
-            path, torch_dtype=torch.bfloat16, trust_remote_code=True)
+            path, dtype=torch.bfloat16, trust_remote_code=True,
+            device_map="auto", max_memory=max_memory, low_cpu_mem_usage=True,
+        )
         model.eval()
         for p in model.parameters():
             p.requires_grad_(False)
-        self._model = model.to(device)
+        # Store WITHOUT nn.Module tracking (object.__setattr__) so that the
+        # module-level .to() in train() never tries to move the 198B weights —
+        # device_map already placed them across GPUs.
+        object.__setattr__(self, "_model", model)
         try:
-            self._processor = _tf.AutoProcessor.from_pretrained(
-                path, trust_remote_code=True)
+            proc = _tf.AutoProcessor.from_pretrained(path, trust_remote_code=True)
         except Exception:
-            self._processor = None
+            proc = None
+        object.__setattr__(self, "_processor", proc)
         hidden = getattr(model.config, "text_config", model.config).hidden_size
-        self._hidden = hidden
+        object.__setattr__(self, "_hidden", hidden)
+        # projection is trainable → registered normally, lives on the decoder GPU
         self._proj = _TextOnlyProjection(hidden, self.cond_dim,
                                          self.n_cond_tokens).to(device)
 
     def forward(self, prompt, sketch=None, ref_image=None) -> ConditionOutput:
         self._build(self._device_marker.device)
-        # Build a multimodal prompt and extract last-layer hidden states of the
-        # *understanding* path. The exact tokenization follows the Step3 chat
-        # template via the processor.
-        device = next(self._model.parameters()).device
+        proj_device = self._device_marker.device
+        # device_map="auto" → accelerate dispatches inputs to the right GPU
+        in_device = next(self._model.parameters()).device
         texts = [prompt] if isinstance(prompt, str) else list(prompt)
         feats_list = []
         for i, txt in enumerate(texts):
@@ -254,14 +264,17 @@ class StepfunBackbone(BackboneAdapter):
             msg = [{"role": "user", "content": content}]
             proc_inputs = self._processor(
                 images=_to_pil(sketch[i]) if sketch is not None else None,
-                text=self._processor.apply_chat_template(msg, add_generation_prompt=True, tokenize=False),
-                return_tensors="pt", padding=True).to(device)
+                text=self._processor.apply_chat_template(
+                    msg, add_generation_prompt=True, tokenize=False),
+                return_tensors="pt", padding=True)
+            proc_inputs = {k: (v.to(in_device) if torch.is_tensor(v) else v)
+                           for k, v in proc_inputs.items()}
             with torch.no_grad():
                 out = self._model(**proc_inputs, output_hidden_states=True,
                                   use_cache=False)
             h = out.hidden_states[-1]  # (1, L, hidden)
-            feats_list.append(h.float())
-        feats = torch.cat(feats_list, dim=0)  # (B, L, hidden)
+            feats_list.append(h.float().to(proj_device))
+        feats = torch.cat(feats_list, dim=0)  # (B, L, hidden) on proj_device
         return self._proj(feats)
 
 
