@@ -84,7 +84,8 @@ def main(path: str) -> None:
         h = out[0] if isinstance(out, (tuple, list)) else out
         if hasattr(h, "last_hidden_state"):
             h = h.last_hidden_state
-        captured.clear(); captured.append(h)
+        captured.clear()
+        captured.append(h)
     last.register_forward_hook(_hook)
 
     proc = tf.AutoProcessor.from_pretrained(path, trust_remote_code=True)
