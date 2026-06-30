@@ -167,13 +167,11 @@ def main(path: str) -> None:
         print("  image forward raised:", repr(e))
 
     print("\n==== language_model direct ====")
-    lm = None
-    for attr in ("language_model",):
-        if hasattr(model, attr):
-            lm = getattr(model, attr); print(f"model.{attr} =", type(lm).__name__)
-        if hasattr(model, "model") and hasattr(getattr(model, "model"), attr):
-            lm = getattr(getattr(model, "model"), attr)
-            print(f"model.model.{attr} =", type(lm).__name__)
+    if hasattr(model, "language_model"):
+        print("model.language_model =", type(model.language_model).__name__)
+    if hasattr(model, "model") and hasattr(getattr(model, "model"), "language_model"):
+        lm = getattr(getattr(model, "model"), "language_model")
+        print("model.model.language_model =", type(lm).__name__)
     print("\nDONE")
 
 
