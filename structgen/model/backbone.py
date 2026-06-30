@@ -449,6 +449,60 @@ def _to_pil(t: torch.Tensor):
     return Image.fromarray(arr)
 
 
+class FileCachedStepfunBackbone(BackboneAdapter):
+    """Text embeddings looked up from a precomputed ``.pt`` dict (no large model
+    loaded) + a trainable sketch CNN + trainable projection.
+
+    This is the DDP-safe backbone: every rank loads only the small embedding
+    file (a handful of (1, hidden) vectors), so 8 ranks don't each need 396GB.
+    The 198B is used ONCE, offline, by the ``precompute`` command.
+    """
+
+    def __init__(self, cond_dim: int = 768, n_cond_tokens: int = 32,
+                 image_size: int = 224, text_emb_path: str | None = None):
+        super().__init__()
+        self.cond_dim = cond_dim
+        self.n_cond_tokens = n_cond_tokens
+        self.image_size = image_size
+        self._raw: dict[str, torch.Tensor] = {}
+        if text_emb_path:
+            data = torch.load(text_emb_path, map_location="cpu", weights_only=False)
+            self._raw = {k: v.detach().float() for k, v in data.items()}
+        hidden = next(iter(self._raw.values())).shape[-1] if self._raw else 4096
+        self._proj = _TextOnlyProjection(hidden, cond_dim, n_cond_tokens)
+        self.sketch_cnn = nn.Sequential(
+            nn.Conv2d(3, 32, 4, 2, 1), nn.GELU(),
+            nn.Conv2d(32, 64, 4, 2, 1), nn.GELU(),
+            nn.Conv2d(64, cond_dim, 4, 2, 1), nn.GELU(),
+            nn.AdaptiveAvgPool2d(1))
+        self.sketch_proj = nn.Linear(cond_dim, cond_dim)
+
+    def forward(self, prompt, sketch=None, ref_image=None) -> ConditionOutput:
+        device = self._proj.proj.weight.device
+        texts = [prompt] if isinstance(prompt, str) else list(prompt)
+        vecs = []
+        for t in texts:
+            v = self._raw.get(t)
+            if v is None:
+                # fall back to the mean of all cached embeddings
+                v = torch.stack(list(self._raw.values())).mean(0)
+            vecs.append(v.to(device))
+        pooled = torch.cat(vecs, dim=0)  # (B, hidden)
+        cond = self._proj(pooled)
+        if sketch is not None:
+            import torch.nn.functional as _F
+            sk = sketch.to(device)
+            if sk.shape[-1] != self.image_size:
+                sk = _F.interpolate(sk, size=self.image_size, mode="bilinear",
+                                    align_corners=False)
+            sk_feat = self.sketch_proj(self.sketch_cnn(sk).flatten(2).transpose(1, 2))
+            return ConditionOutput(
+                tokens=cond.tokens + sk_feat,
+                pooled=cond.pooled + sk_feat.squeeze(1),
+            )
+        return cond
+
+
 def build_backbone(cfg) -> BackboneAdapter:
     kind = cfg.backbone.kind
     if kind == "proxy":
@@ -465,4 +519,9 @@ def build_backbone(cfg) -> BackboneAdapter:
                                n_cond_tokens=cfg.backbone.n_cond_tokens,
                                pretrained_path=cfg.backbone.pretrained_path,
                                image_size=cfg.backbone.image_size)
+    if kind == "cached":
+        return FileCachedStepfunBackbone(cond_dim=cfg.backbone.cond_dim,
+                                         n_cond_tokens=cfg.backbone.n_cond_tokens,
+                                         image_size=cfg.backbone.image_size,
+                                         text_emb_path=cfg.backbone.text_emb_path)
     raise ValueError(f"unknown backbone kind: {kind}")

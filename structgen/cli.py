@@ -30,6 +30,7 @@ def _build_cfg(args) -> StructGenConfig:
     cfg = StructGenConfig()
     cfg.backbone = BackboneConfig(
         kind=args.backbone, pretrained_path=args.pretrained_path,
+        text_emb_path=getattr(args, "text_emb", None),
         image_size=args.image_size,
     )
     cfg.decoder = DecoderConfig(
@@ -50,11 +51,25 @@ def _build_cfg(args) -> StructGenConfig:
 
 def cmd_train(args) -> int:
     from structgen.train import train
+    _maybe_init_distributed()
     cfg = _build_cfg(args)
     smoke = args.smoke_steps if args.smoke else None
     ckpt = train(cfg, smoke_steps=smoke)
-    print(f"\nDone. Final checkpoint: {ckpt}")
+    if _is_main():
+        print(f"\nDone. Final checkpoint: {ckpt}")
     return 0
+
+
+def _maybe_init_distributed():
+    import os
+    import torch.distributed as dist
+    if "RANK" in os.environ and "WORLD_SIZE" in os.environ and not dist.is_initialized():
+        dist.init_process_group("nccl")
+
+
+def _is_main() -> bool:
+    import torch.distributed as dist
+    return (not dist.is_available()) or (not dist.is_initialized()) or dist.get_rank() == 0
 
 
 def cmd_generate(args) -> int:
@@ -69,6 +84,36 @@ def cmd_generate(args) -> int:
     )
     print(f"field shape={field.shape} sdf[{field.min():.3f},{field.max():.3f}] "
           f"solid_frac={float((field<0).mean()):.3f}")
+    return 0
+
+
+def cmd_precompute(args) -> int:
+    """Load the 198B backbone once, encode every distinct prompt in the recipe
+    bank, save {prompt: (1, hidden)} to a .pt file. Run this ONCE; afterwards
+    train with --backbone cached --text-emb <this file> (no 198B during training,
+    DDP-safe across 8 GPUs)."""
+    import os
+    import torch as _torch
+    from structgen.data import sampler
+    from structgen.model.backbone import build_backbone
+    from structgen.config import StructGenConfig, BackboneConfig
+
+    cfg = StructGenConfig(backbone=BackboneConfig(
+        kind="stepfun", pretrained_path=args.pretrained_path,
+        image_size=args.image_size))
+    device = _torch.device("cuda" if _torch.cuda.is_available() else "cpu")
+    bb = build_backbone(cfg).to(device)
+    prompts = sorted({rp.prompt for rp in sampler.all_recipes()})
+    print(f"[precompute] encoding {len(prompts)} distinct prompts with 198B...")
+    emb: dict[str, _torch.Tensor] = {}
+    for i, p in enumerate(prompts):
+        bb(p)  # batch=1; raw pooled (1,hidden) is cached in bb._text_cache
+        emb[p] = bb._text_cache[p].detach().cpu()
+        print(f"  [{i + 1}/{len(prompts)}] {p[:60]}...")
+    os.makedirs(os.path.dirname(os.path.abspath(args.out)) or ".", exist_ok=True)
+    _torch.save(emb, args.out)
+    print(f"[precompute] saved {len(emb)} embeddings -> {args.out}")
+    print(f"[precompute] now train with: --backbone cached --text-emb {args.out}")
     return 0
 
 
@@ -99,8 +144,11 @@ def main(argv=None) -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
 
     def add_common(sp):
-        sp.add_argument("--backbone", default="proxy", choices=["proxy", "qwen", "stepfun"])
+        sp.add_argument("--backbone", default="proxy",
+                        choices=["proxy", "qwen", "stepfun", "cached"])
         sp.add_argument("--pretrained-path", default=None)
+        sp.add_argument("--text-emb", default=None,
+                        help="precomputed prompt->emb .pt (for --backbone cached)")
         sp.add_argument("--device", default="cuda")
         sp.add_argument("--res", type=int, default=64, help="voxel grid resolution")
         sp.add_argument("--base-ch", type=int, default=64)
@@ -136,6 +184,13 @@ def main(argv=None) -> int:
     insp.add_argument("--res", type=int, default=64)
     insp.add_argument("--out-dir", default="outputs/structgen/inspect")
     insp.set_defaults(func=cmd_inspect)
+
+    pre = sub.add_parser("precompute",
+                         help="encode all prompts with 198B once → .pt (run before cached+DDP train)")
+    pre.add_argument("--pretrained-path", required=True)
+    pre.add_argument("--image-size", type=int, default=224)
+    pre.add_argument("--out", default="outputs/structgen/text_emb.pt")
+    pre.set_defaults(func=cmd_precompute)
 
     args = p.parse_args(argv)
     return args.func(args)

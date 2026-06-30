@@ -15,8 +15,9 @@ class BackboneConfig:
     weights + modeling code.
     """
 
-    kind: str = "proxy"  # "proxy" | "stepfun"
+    kind: str = "proxy"  # "proxy" | "stepfun" | "cached"
     pretrained_path: str | None = None  # Step-3.7-Flash dir on compute box
+    text_emb_path: str | None = None  # precomputed prompt->emb dict (.pt), kind="cached"
     cond_dim: int = 768  # output condition token dim fed into the decoder
     n_cond_tokens: int = 32  # pooled/selected token count used for cross-attn
     freeze: bool = True  # backbone is a *pretrained component*, not trained

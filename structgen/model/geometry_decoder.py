@@ -55,6 +55,13 @@ class GeometryDecoder(nn.Module):
         )
 
     # ------------------------------------------------------------------ #
+    # forward = loss entry (so DDP can route gradients through forward())
+    # ------------------------------------------------------------------ #
+
+    def forward(self, field, pooled, cond_tokens, gt_surface, weights, flow_cfg):
+        return self.decode_loss(field, pooled, cond_tokens, gt_surface, weights, flow_cfg)
+
+    # ------------------------------------------------------------------ #
     # Training
     # ------------------------------------------------------------------ #
 
