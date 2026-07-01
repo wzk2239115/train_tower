@@ -52,6 +52,25 @@ class GeometryDecoder(nn.Module):
             use_self_cond=c.use_self_cond,
             cross_attn=c.cross_attn,
         )
+        # classifier-free guidance: learnable null condition (for dropped captions)
+        self.null_pool = nn.Parameter(torch.randn(1, c.cond_dim) * 0.02)
+        self.null_tok = nn.Parameter(torch.randn(1, 1, c.cond_dim) * 0.02)
+
+    def _maybe_drop(self, pooled, tokens):
+        """Per-sample CFG dropout: replace some samples' condition with null."""
+        d = getattr(self.cfg, "cfg_dropout", 0.0)
+        if d <= 0 or not self.training:
+            return pooled, tokens
+        B = pooled.shape[0]
+        drop = torch.rand(B, device=pooled.device) < d
+        if drop.any():
+            pooled = pooled.clone()
+            pooled[drop] = self.null_pool.expand(B, -1)[drop]
+            if tokens is not None:
+                tokens = tokens.clone()
+                T = tokens.shape[1]
+                tokens[drop] = self.null_tok.expand(-1, T, -1)[drop]
+        return pooled, tokens
 
     # ------------------------------------------------------------------ #
     # forward = loss entry (so DDP can route gradients through forward())
@@ -81,6 +100,7 @@ class GeometryDecoder(nn.Module):
             time_schedule=flow_cfg.time_schedule,
             noise_scale=flow_cfg.noise_scale,
         )
+        pooled, cond_tokens = self._maybe_drop(pooled, cond_tokens)
         x0_pred = self.net(z, t, pooled, cond_tokens, x0_selfcond=prev_x0)
 
         # ---- STABLE x0-prediction loss (the fix for the fog/divergence bug).
@@ -121,24 +141,35 @@ class GeometryDecoder(nn.Module):
 
     @torch.no_grad()
     def sample(self, pooled: torch.Tensor, cond_tokens: torch.Tensor | None,
-               flow_cfg, *, device=None) -> torch.Tensor:
+               flow_cfg, *, device=None, cfg_scale: float | None = None) -> torch.Tensor:
         """Integrate rectified flow from noise → clean field. Returns (B,C,D,H,W).
 
-        Velocity for x0-prediction parametrization: v = (x0 - z)/(1-t).
+        With classifier-free guidance (cfg_scale>1): combine conditional and
+        unconditional (null) predictions to amplify the caption's influence —
+        this is what breaks the multi-shape generation collapse.
         """
         device = device or pooled.device
         B = pooled.shape[0]
         R = self.cfg.grid_res
         C = self.cfg.field_channels
         z = torch.randn(B, C, R, R, R, device=device) * flow_cfg.noise_scale
+        guide = flow_cfg.cfg_scale if cfg_scale is None else cfg_scale
+        null_pool = self.null_pool.expand(B, -1)
+        null_tok = (self.null_tok.expand(B, -1, -1) if cond_tokens is not None else None)
+        if cond_tokens is not None:
+            null_tok = null_tok.expand(-1, cond_tokens.shape[1], -1)
         steps = flow_cfg.n_sample_steps
         prev_x0 = None
         dt = 1.0 / steps
         for i in range(steps):
             t = torch.full((B,), i * dt, device=device, dtype=z.dtype)
-            x0_pred = self.net(z, t, pooled, cond_tokens, x0_selfcond=prev_x0)
+            x0_c = self.net(z, t, pooled, cond_tokens, x0_selfcond=prev_x0)
+            if guide != 1.0 and cond_tokens is not None:
+                x0_u = self.net(z, t, null_pool, null_tok, x0_selfcond=prev_x0)
+                x0_pred = x0_u + guide * (x0_c - x0_u)   # CFG
+            else:
+                x0_pred = x0_c
             prev_x0 = x0_pred
-            denom = (1.0 - t).clamp_min(0.02)        # avoid div-by-0 at t=1
-            v = (x0_pred - z) / denom.view(-1, 1, 1, 1, 1)
+            v = (x0_pred - z)
             z = z + v * dt
         return z

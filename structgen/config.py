@@ -37,6 +37,13 @@ class DecoderConfig:
     n_cond_tokens: int = 32
     cross_attn: bool = True  # inject backbone tokens via cross-attention
     use_self_cond: bool = True  # ELF-style self-conditioning
+    cfg_dropout: float = 0.15  # classifier-free guidance: drop condition this often in train
+    # latent two-stage (SparseFlex/TRELLIS route)
+    latent_res: int = 16  # VAE latent grid resolution
+    latent_ch: int = 32  # VAE latent channels
+    vae_base: int = 24  # VAE base width
+    flow_base: int = 192  # latent-flow U-Net base width
+    flow_mults: tuple[int, ...] = (1, 2)  # latent-flow U-Net channel mults
 
 
 @dataclass
@@ -49,6 +56,7 @@ class FlowConfig:
     t_eps: float = 0.05
     noise_scale: float = 1.0
     n_sample_steps: int = 50  # Euler steps at inference
+    cfg_scale: float = 4.0  # classifier-free guidance at inference (1 = no guidance)
 
 
 @dataclass

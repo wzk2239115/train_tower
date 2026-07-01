@@ -88,6 +88,68 @@ def cmd_generate(args) -> int:
     return 0
 
 
+def cmd_convert_shapenet(args) -> int:
+    """Extract ShapeNet NRRD solid voxels (+ pair captions) into a flat dir of
+    .nrrd for the latent pipeline. Skips models without a caption."""
+    import os
+    import shutil
+    import zipfile
+
+    os.makedirs(args.out_dir, exist_ok=True)
+    zf = zipfile.ZipFile(args.input)
+    nrrds = [n for n in zf.namelist() if n.endswith(".nrrd")]
+    import csv
+    have = {r["modelId"] for r in csv.DictReader(open(args.captions))}
+    kept = 0
+    for n in nrrds:
+        mid = os.path.basename(n)[:-5]
+        if mid not in have:
+            continue
+        dst = os.path.join(args.out_dir, mid + ".nrrd")
+        if not os.path.exists(dst):
+            with zf.open(n) as src, open(dst, "wb") as out:
+                shutil.copyfileobj(src, out)
+        kept += 1
+        if kept % 2000 == 0:
+            print(f"  extracted {kept}...")
+    print(f"[convert-shapenet] {kept} captioned NRRD -> {args.out_dir}")
+    return 0
+
+
+def cmd_train_vae(args) -> int:
+    from structgen.latent import train_vae
+    _maybe_init_distributed()
+    cfg = _build_cfg(args)
+    train_vae(cfg, args.nrrd_dir, args.captions, steps=args.steps,
+              batch=args.batch, beta=args.beta, out=args.out)
+    return 0
+
+
+def cmd_train_latent(args) -> int:
+    from structgen.latent import train_latent
+    _maybe_init_distributed()
+    cfg = _build_cfg(args)
+    train_latent(cfg, args.vae, args.nrrd_dir, args.captions,
+                 steps=args.steps, batch=args.batch, out=args.out)
+    return 0
+
+
+def cmd_generate_latent(args) -> int:
+    from structgen.infer import sketch_from_path
+    from structgen.latent import generate_latent
+    from structgen.model.meshing import occupancy_to_mesh, export_mesh
+    cfg = _build_cfg(args)
+    sk = sketch_from_path(args.sketch, cfg.backbone.image_size) if args.sketch else None
+    occ = generate_latent(cfg, args.vae, args.ckpt, args.prompt, sketch=sk,
+                          cfg_scale=args.cfg_scale, n_steps=args.sample_steps)
+    if args.out:
+        mesh = occupancy_to_mesh(occ)
+        if mesh is not None:
+            export_mesh(mesh, args.out)
+            print(f"[gen] mesh {len(mesh)} faces -> {args.out}")
+    return 0
+
+
 def cmd_convert_abc(args) -> int:
     """Convert a directory of ABC STL meshes → per-model .npz (field+surface+
     prompt) ready for StructGenDataset. Extract the ``.7z`` first (py7zr)."""
@@ -265,6 +327,56 @@ def main(argv=None) -> int:
     cab.add_argument("--force", action="store_true", help="reconvert existing")
     cab.add_argument("--verbose", action="store_true")
     cab.set_defaults(func=cmd_convert_abc)
+
+    cs = sub.add_parser("convert-shapenet",
+                        help="ShapeNet NRRD zip + captions CSV → flat dir of .nrrd (latent pipeline)")
+    cs.add_argument("--input", required=True, help="nrrd_*.zip")
+    cs.add_argument("--captions", required=True, help="captions.tablechair.csv")
+    cs.add_argument("--out-dir", default="data/shapenet/nrrd")
+    cs.set_defaults(func=cmd_convert_shapenet)
+
+    def _latent_common(sp):
+        sp.add_argument("--nrrd-dir", default="data/shapenet/nrrd")
+        sp.add_argument("--captions", default="captions.tablechair.csv")
+        sp.add_argument("--res", type=int, default=64)
+        sp.add_argument("--base-ch", type=int, default=64)
+        sp.add_argument("--mults", default="1,2,4,8")
+        sp.add_argument("--blocks", type=int, default=2)
+        sp.add_argument("--image-size", type=int, default=224)
+        sp.add_argument("--backbone", default="proxy", choices=["proxy", "qwen", "stepfun", "cached"])
+        sp.add_argument("--pretrained-path", default=None)
+        sp.add_argument("--text-emb", default=None)
+
+    v = sub.add_parser("train-vae", help="Stage A: train the voxel VAE (occ<->latent)")
+    _latent_common(v)
+    v.add_argument("--vae-base", type=int, default=24)
+    v.add_argument("--steps", type=int, default=20000)
+    v.add_argument("--batch", type=int, default=16)
+    v.add_argument("--beta", type=float, default=1e-3)
+    v.add_argument("--out", default="outputs/structgen/vae.pt")
+    v.set_defaults(func=cmd_train_vae)
+
+    f = sub.add_parser("train-latent", help="Stage B: conditional flow in VAE latent (CFG)")
+    _latent_common(f)
+    f.add_argument("--vae", required=True)
+    f.add_argument("--flow-base", type=int, default=192)
+    f.add_argument("--latent-res", type=int, default=16)
+    f.add_argument("--latent-ch", type=int, default=32)
+    f.add_argument("--steps", type=int, default=30000)
+    f.add_argument("--batch", type=int, default=8)
+    f.add_argument("--out", default="outputs/structgen/flow.pt")
+    f.set_defaults(func=cmd_train_latent)
+
+    gl = sub.add_parser("generate-latent", help="sample latent (CFG) → decode → STL")
+    _latent_common(gl)
+    gl.add_argument("--vae", required=True)
+    gl.add_argument("--ckpt", required=True, help="flow.pt")
+    gl.add_argument("--prompt", required=True)
+    gl.add_argument("--sketch", default=None)
+    gl.add_argument("--cfg-scale", type=float, default=4.0)
+    gl.add_argument("--sample-steps", type=int, default=50)
+    gl.add_argument("--out", default="outputs/structgen/gen_latent.stl")
+    gl.set_defaults(func=cmd_generate_latent)
 
     args = p.parse_args(argv)
     return args.func(args)
