@@ -27,6 +27,10 @@ train = [
     "packaging>=23.0",
     "safetensors>=0.4.0",
 ]
+structgen = [
+    "scikit-image>=0.22.0",  # marching cubes (SDF → mesh → STL/OBJ)
+    "scipy>=1.10.0",
+]
 
 [project.scripts]
 tower = "tower.cli:main"

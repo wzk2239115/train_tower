@@ -29,3 +29,6 @@ build/
 .DS_Store
 *.swp
 .vscode/
+
+# structgen data artifacts
+*.zip
