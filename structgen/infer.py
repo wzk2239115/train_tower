@@ -28,6 +28,17 @@ def load_trained(cfg: StructGenConfig, ckpt_path: str, device: torch.device):
     backbone = build_backbone(cfg).to(device)
     decoder = GeometryDecoder(cfg.decoder).to(device)
     decoder.load_state_dict(state["decoder"])
+    if "backbone" in state:
+        # load the TRAINED condition encoder (text projection + sketch CNN)
+        # so the decoder sees the same conditions it was trained on.
+        missing, unexpected = backbone.load_state_dict(state["backbone"],
+                                                       strict=False)
+        if unexpected:
+            print(f"[load] ignored backbone keys: {unexpected}")
+    else:
+        print("[load] WARNING: no backbone weights in checkpoint — generation "
+              "will use a RANDOM condition encoder → fog output. Retrain with "
+              "the current code (it saves both decoder + backbone).")
     decoder.eval()
     backbone.eval()
     return backbone, decoder

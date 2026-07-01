@@ -149,8 +149,15 @@ def train(cfg: StructGenConfig, smoke_steps: int | None = None) -> str:
                   f"total={avg['loss/total']:.4f} {msg}")
         if is_main and (step % cfg.train.save_every == 0 or step == max_steps):
             ckpt = os.path.join(cfg.train.out_dir, f"decoder_step{step}.pt")
-            torch.save({"decoder": _bb(decoder).state_dict(),
-                        "step": step, "cfg": asdict(cfg)}, ckpt)
+            # Save BOTH the decoder AND the trainable condition-encoder params
+            # (text projection + sketch CNN). The frozen 198B is NOT in here
+            # (it's stored untracked in StepfunBackbone). Without these, the
+            # decoder receives random conditions at generation → fog output.
+            torch.save({
+                "decoder": _bb(decoder).state_dict(),
+                "backbone": _bb(backbone).state_dict(),
+                "step": step, "cfg": asdict(cfg),
+            }, ckpt)
             print(f"  saved {ckpt}")
         if ddp:
             dist.barrier()
