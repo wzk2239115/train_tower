@@ -89,29 +89,71 @@ def cmd_generate(args) -> int:
 
 
 def cmd_convert_shapenet(args) -> int:
-    """Extract ShapeNet NRRD solid voxels (+ pair captions) into a flat dir of
-    .nrrd for the latent pipeline. Skips models without a caption."""
+    """Extract ShapeNet NRRD solid voxels (pair with captions) into a flat dir
+    of .nrrd. Accepts a .zip / .7z / already-extracted dir. Skips models
+    without a caption. Robust to non-PK archives via system `unzip` fallback."""
+    import csv
+    import glob
     import os
     import shutil
-    import zipfile
 
     os.makedirs(args.out_dir, exist_ok=True)
-    zf = zipfile.ZipFile(args.input)
-    nrrds = [n for n in zf.namelist() if n.endswith(".nrrd")]
-    import csv
     have = {r["modelId"] for r in csv.DictReader(open(args.captions))}
-    kept = 0
-    for n in nrrds:
-        mid = os.path.basename(n)[:-5]
+
+    def _save(name, src_file):
+        mid = os.path.basename(name)[:-5]
         if mid not in have:
-            continue
+            return 0
         dst = os.path.join(args.out_dir, mid + ".nrrd")
         if not os.path.exists(dst):
-            with zf.open(n) as src, open(dst, "wb") as out:
-                shutil.copyfileobj(src, out)
-        kept += 1
-        if kept % 2000 == 0:
-            print(f"  extracted {kept}...")
+            with open(dst, "wb") as out:
+                shutil.copyfileobj(src_file, out)
+        return 1
+
+    src = args.input
+    kept = 0
+    if os.path.isdir(src):
+        nrrds = sorted(glob.glob(os.path.join(src, "**", "*.nrrd"), recursive=True))
+        print(f"[convert-shapenet] dir {src}: {len(nrrds)} .nrrd")
+        for n in nrrds:
+            with open(n, "rb") as fh:
+                kept += _save(n, fh)
+    else:
+        with open(src, "rb") as fh:
+            magic = fh.read(6)
+        try:
+            if magic[:2] == b"PK":
+                import zipfile
+                zf = zipfile.ZipFile(src)
+                names = [n for n in zf.namelist() if n.endswith(".nrrd")]
+                print(f"[convert-shapenet] zip: {len(names)} .nrrd")
+                for n in names:
+                    with zf.open(n) as fh:
+                        kept += _save(n, fh)
+                    if kept and kept % 2000 == 0:
+                        print(f"  {kept}...")
+            elif magic[:2] == b"7z":
+                import py7zr
+                with py7zr.SevenZipFile(src, mode="r") as z:
+                    for n in z.getnames():
+                        if n.endswith(".nrrd"):
+                            with z.open(n) as fh:
+                                kept += _save(n, fh)
+            else:
+                import subprocess
+                import tempfile
+                td = tempfile.mkdtemp()
+                print(f"[convert-shapenet] magic {magic!r} — trying system unzip -> {td}")
+                subprocess.run(["unzip", "-q", "-o", src, "-d", td], check=False)
+                nrrds = sorted(glob.glob(os.path.join(td, "**", "*.nrrd"), recursive=True))
+                for n in nrrds:
+                    with open(n, "rb") as fh:
+                        kept += _save(n, fh)
+                shutil.rmtree(td, ignore_errors=True)
+        except Exception as e:
+            print(f"[convert-shapenet] ERROR: {e!r}\n"
+                  "  check: `file` + `du -h` on the input — it may be a truncated download")
+            return 1
     print(f"[convert-shapenet] {kept} captioned NRRD -> {args.out_dir}")
     return 0
 
