@@ -257,9 +257,14 @@ def cmd_convert_abc(args) -> int:
 
 
 def cmd_precompute(args) -> int:
+    """Encode every distinct prompt with the Stepfun backbone ONCE → {prompt: (1,hidden)}
+    .pt. With --captions it encodes the ShapeNet descriptions; otherwise the
+    synthetic recipe prompts. Run once, then train with --backbone cached."""
     import os
+    import time
+
     import torch as _torch
-    from structgen.data import sampler
+
     from structgen.model.backbone import build_backbone
     from structgen.config import StructGenConfig, BackboneConfig
 
@@ -268,16 +273,25 @@ def cmd_precompute(args) -> int:
         image_size=args.image_size))
     device = _torch.device("cuda" if _torch.cuda.is_available() else "cpu")
     bb = build_backbone(cfg).to(device)
-    prompts = sorted({rp.prompt for rp in sampler.all_recipes()})
-    print(f"[precompute] encoding {len(prompts)} distinct prompts with 198B...")
+
+    if args.captions:
+        import csv
+        prompts = sorted({r["description"] for r in csv.DictReader(open(args.captions))})
+    else:
+        from structgen.data import sampler
+        prompts = sorted({rp.prompt for rp in sampler.all_recipes()})
+    print(f"[precompute] encoding {len(prompts)} distinct prompts with Stepfun...")
+    t0 = time.time()
     emb: dict[str, _torch.Tensor] = {}
     for i, p in enumerate(prompts):
-        bb(p)  # batch=1; raw pooled (1,hidden) is cached in bb._text_cache
+        bb(p)  # batch=1 (Step3p7 batch>1 hits a RoPE bug); cached after first
         emb[p] = bb._text_cache[p].detach().cpu()
-        print(f"  [{i + 1}/{len(prompts)}] {p[:60]}...")
+        if (i + 1) % 200 == 0 or i == 0:
+            print(f"  [{i + 1}/{len(prompts)}] {(time.time()-t0)/(i+1):.2f}s/prompt  {p[:50]}")
     os.makedirs(os.path.dirname(os.path.abspath(args.out)) or ".", exist_ok=True)
     _torch.save(emb, args.out)
-    print(f"[precompute] saved {len(emb)} embeddings -> {args.out}")
+    print(f"[precompute] saved {len(emb)} embeddings -> {args.out} "
+          f"({time.time()-t0:.0f}s)")
     print(f"[precompute] now train with: --backbone cached --text-emb {args.out}")
     return 0
 
@@ -353,8 +367,10 @@ def main(argv=None) -> int:
     insp.set_defaults(func=cmd_inspect)
 
     pre = sub.add_parser("precompute",
-                         help="encode all prompts with 198B once → .pt (run before cached+DDP train)")
+                         help="encode all prompts/captions with Stepfun once → .pt (run before cached+DDP train)")
     pre.add_argument("--pretrained-path", required=True)
+    pre.add_argument("--captions", default=None,
+                     help="captions CSV: encode these descriptions (else synthetic recipe prompts)")
     pre.add_argument("--image-size", type=int, default=224)
     pre.add_argument("--out", default="outputs/structgen/text_emb.pt")
     pre.set_defaults(func=cmd_precompute)
