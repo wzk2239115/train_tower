@@ -32,4 +32,3 @@ build/
 
 # structgen data artifacts
 *.zip
-captions.tablechair.csv
