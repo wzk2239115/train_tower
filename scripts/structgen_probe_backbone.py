@@ -13,7 +13,7 @@ import torch.nn as nn
 
 def main(path):
     import transformers as tf
-    from structgen.model.backbone import _patch_causal_mask_compat
+    from structgen.model.backbone import _patch_causal_mask_compat, _patch_rope_batched_compat
 
     n_gpu = torch.cuda.device_count() or 1
     max_mem = {0: "68GiB"}
@@ -24,6 +24,8 @@ def main(path):
         path, dtype=torch.bfloat16, trust_remote_code=True,
         device_map="auto", max_memory=max_mem, low_cpu_mem_usage=True)
     _patch_causal_mask_compat()
+    rp = _patch_rope_batched_compat()
+    print(f"[probe] patched apply_rotary_pos_emb: {rp}")
     model.eval()
     for p in model.parameters():
         p.requires_grad_(False)
