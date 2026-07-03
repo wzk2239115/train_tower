@@ -79,7 +79,8 @@ def main(path):
 
     def _hk(_m, _i, o):
         h = o[0] if isinstance(o, (tuple, list)) else o
-        captured.clear(); captured.append(h)
+        captured.clear()
+        captured.append(h)
     last = None
     for name, mod in model.named_modules():
         if isinstance(mod, nn.ModuleList) and len(mod) >= 10 and "language" in name.lower():
