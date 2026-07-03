@@ -193,6 +193,51 @@ class QwenProxyBackbone(BackboneAdapter):
         return ConditionOutput(tokens=tokens, pooled=feats.mean(dim=1))
 
 
+def _patch_rope_batched_compat() -> list[str]:
+    """Fix Step3p7's batched-RoPE shape bug.
+
+    The model passes cos/sin as 3-D ``[B, seq, head_dim]`` to
+    ``apply_rotary_pos_emb`` WITHOUT unsqueezing to 4-D. The multiply
+    ``q_rot([B,heads,seq,rot]) * cos([B,seq,rot])`` only broadcasts when B==1
+    (the B-axis of size 1 happens to broadcast across heads); for B>1 it raises
+    "size of tensor a (heads) must match b (B) at dim 1". We wrap
+    apply_rotary_pos_emb to unsqueeze cos/sin to 4-D if they arrive 3-D.
+    """
+    import functools
+    import sys
+
+
+    patched: list[str] = []
+
+    def _wrap(mod, rotate_half):
+        orig = mod.apply_rotary_pos_emb
+        if getattr(orig, "_sg_rope_patched", False):
+            return
+
+        @functools.wraps(orig)
+        def fixed(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
+            if cos.dim() == 3:
+                cos = cos.unsqueeze(unsqueeze_dim)
+                sin = sin.unsqueeze(unsqueeze_dim)
+            return orig(q, k, cos, sin, position_ids=position_ids,
+                        unsqueeze_dim=unsqueeze_dim)
+
+        fixed._sg_rope_patched = True  # type: ignore[attr-defined]
+        mod.apply_rotary_pos_emb = fixed
+
+    for modname, mod in list(sys.modules.items()):
+        if mod is None:
+            continue
+        if (callable(getattr(mod, "apply_rotary_pos_emb", None))
+                and callable(getattr(mod, "rotate_half", None))):
+            try:
+                _wrap(mod, getattr(mod, "rotate_half"))
+                patched.append(modname)
+            except Exception:
+                pass
+    return patched
+
+
 def _patch_causal_mask_compat() -> list[str]:
     """Wrap every mask-creation function reachable in ``sys.modules`` so it
     tolerates extra kwargs (e.g. ``cache_position``) that Step-3.7-Flash's
@@ -309,6 +354,11 @@ class StepfunBackbone(BackboneAdapter):
         if patched:
             print(f"[stepfun] patched create_causal_mask in {len(patched)} module(s) "
                   f"(compat: {', '.join(patched[:3])}{'…' if len(patched) > 3 else ''})")
+        # compat: fix batched-RoPE shape bug so batch>1 forward works
+        rope = _patch_rope_batched_compat()
+        if rope:
+            print(f"[stepfun] patched apply_rotary_pos_emb in {len(rope)} module(s) "
+                  f"(batched-RoPE fix)")
         # report placement: confirm the model actually spans multiple GPUs
         dm = getattr(model, "hf_device_map", {})
         from collections import Counter
