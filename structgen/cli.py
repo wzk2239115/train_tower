@@ -257,9 +257,11 @@ def cmd_convert_abc(args) -> int:
 
 
 def cmd_precompute(args) -> int:
-    """Encode every distinct prompt with the Stepfun backbone ONCE → {prompt: (1,hidden)}
-    .pt. With --captions it encodes the ShapeNet descriptions; otherwise the
-    synthetic recipe prompts. Run once, then train with --backbone cached."""
+    """Encode the captions actually used in training (one per NRRD model) with
+    the Stepfun backbone ONCE → {prompt: (1,hidden)} .pt. Batched + resumable +
+    incremental save, so it's fast and crash-safe. Run once, then train cached."""
+    import csv
+    import glob
     import os
     import time
 
@@ -274,25 +276,47 @@ def cmd_precompute(args) -> int:
     device = _torch.device("cuda" if _torch.cuda.is_available() else "cpu")
     bb = build_backbone(cfg).to(device)
 
-    if args.captions:
-        import csv
-        prompts = sorted({r["description"] for r in csv.DictReader(open(args.captions))})
+    # captions actually used: one per modelId that has an NRRD (matches the
+    # dataset's modelId→description map), to avoid encoding 74k redundant rows.
+    cap_map = {}
+    with open(args.captions) as f:
+        for r in csv.DictReader(f):
+            cap_map[r["modelId"]] = r["description"]
+    if args.nrrd_dir and os.path.isdir(args.nrrd_dir):
+        have = {os.path.basename(n)[:-5]
+                for n in glob.glob(os.path.join(args.nrrd_dir, "*.nrrd"))}
+        prompts = sorted({cap_map[m] for m in have if m in cap_map})
     else:
-        from structgen.data import sampler
-        prompts = sorted({rp.prompt for rp in sampler.all_recipes()})
-    print(f"[precompute] encoding {len(prompts)} distinct prompts with Stepfun...")
-    t0 = time.time()
+        prompts = sorted(set(cap_map.values()))
+    print(f"[precompute] {len(prompts)} distinct captions to encode (batched)")
+
+    # resume from existing .pt
     emb: dict[str, _torch.Tensor] = {}
-    for i, p in enumerate(prompts):
-        bb(p)  # batch=1 (Step3p7 batch>1 hits a RoPE bug); cached after first
-        emb[p] = bb._text_cache[p].detach().cpu()
-        if (i + 1) % 200 == 0 or i == 0:
-            print(f"  [{i + 1}/{len(prompts)}] {(time.time()-t0)/(i+1):.2f}s/prompt  {p[:50]}")
-    os.makedirs(os.path.dirname(os.path.abspath(args.out)) or ".", exist_ok=True)
-    _torch.save(emb, args.out)
+    if os.path.exists(args.out):
+        try:
+            emb = _torch.load(args.out, map_location="cpu", weights_only=False)
+            print(f"[precompute] resuming: {len(emb)} already encoded")
+        except Exception:
+            emb = {}
+    todo = [p for p in prompts if p not in emb]
+    if not todo:
+        print("[precompute] everything already encoded"); return 0
+
+    t0 = time.time()
+    done = len(emb)
+    BS = args.batch
+    for i in range(0, len(todo), BS):
+        chunk = todo[i:i + BS]
+        vecs = bb.encode_texts_batched(chunk, batch=BS, proj_device=device).cpu()
+        for p, v in zip(chunk, vecs):
+            emb[p] = v.detach()[None]
+        done += len(chunk)
+        if done % 500 < BS or i + BS >= len(todo):
+            _torch.save(emb, args.out)
+            eta_h = (time.time() - t0) / max(i + BS, 1) * len(todo) / 3600
+            print(f"  [{done}/{len(prompts)}] saved (~{eta_h:.1f}h ETA)")
     print(f"[precompute] saved {len(emb)} embeddings -> {args.out} "
-          f"({time.time()-t0:.0f}s)")
-    print(f"[precompute] now train with: --backbone cached --text-emb {args.out}")
+          f"({time.time()-t0:.0f}s for {len(todo)} new)")
     return 0
 
 
@@ -367,10 +391,12 @@ def main(argv=None) -> int:
     insp.set_defaults(func=cmd_inspect)
 
     pre = sub.add_parser("precompute",
-                         help="encode all prompts/captions with Stepfun once → .pt (run before cached+DDP train)")
+                         help="encode captions (one per NRRD model) with Stepfun once → .pt (batched, resumable)")
     pre.add_argument("--pretrained-path", required=True)
-    pre.add_argument("--captions", default=None,
-                     help="captions CSV: encode these descriptions (else synthetic recipe prompts)")
+    pre.add_argument("--captions", required=True, help="captions CSV")
+    pre.add_argument("--nrrd-dir", default=None,
+                     help="if set, encode only captions of models that have an NRRD here")
+    pre.add_argument("--batch", type=int, default=32)
     pre.add_argument("--image-size", type=int, default=224)
     pre.add_argument("--out", default="outputs/structgen/text_emb.pt")
     pre.set_defaults(func=cmd_precompute)

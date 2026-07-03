@@ -400,6 +400,40 @@ class StepfunBackbone(BackboneAdapter):
             self._model(**enc, use_cache=False)
         return self._masked_mean_pool(self._captured_hidden[0], attn, proj_device)
 
+    @torch.no_grad()
+    def encode_texts_batched(self, texts: list[str], batch: int = 32,
+                             proj_device: torch.device | None = None) -> torch.Tensor:
+        """Fast batched text encoding. Passes position_ids explicitly (=arange)
+        to bypass the Step3p7 RoPE bug that mis-derives positions for padded
+        batches. Returns (N, hidden) mean-pooled vectors. Falls back to
+        per-sample on any error."""
+        self._build(self._device_marker.device)
+        proj_device = proj_device or self._device_marker.device
+        in_device = next(self._model.parameters()).device
+        proc = self._processor
+        chats = [proc.apply_chat_template(
+            [{"role": "user", "content": [{"type": "text", "text": t}]}],
+            add_generation_prompt=True, tokenize=False) for t in texts]
+        out = []
+        for i in range(0, len(chats), batch):
+            chunk = chats[i:i + batch]
+            enc = proc(text=chunk, return_tensors="pt", padding=True, truncation=True,
+                       max_length=96)
+            ids = enc["input_ids"].to(in_device)
+            attn = enc["attention_mask"].to(in_device)
+            L = ids.shape[1]
+            pos = torch.arange(L, device=in_device).unsqueeze(0).expand_as(ids)
+            try:
+                self._model(input_ids=ids, attention_mask=attn, position_ids=pos,
+                            use_cache=False)
+                h = self._captured_hidden[0]
+                out.append(self._masked_mean_pool(h, attn, proj_device))
+            except Exception as e:
+                print(f"[stepfun] batched encode failed ({e!r}); per-sample fallback")
+                for t in chunk:
+                    out.append(self._encode_text_one(t, in_device, proj_device))
+        return torch.cat(out, dim=0)
+
     def forward(self, prompt, sketch=None, ref_image=None) -> ConditionOutput:
         self._build(self._device_marker.device)
         proj_device = self._device_marker.device
