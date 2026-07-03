@@ -1,6 +1,8 @@
 """Print Step3p7's RoPE source so we can patch the batched shape bug precisely."""
-import inspect, sys, transformers as tf
-import torch.nn as nn
+import inspect
+import sys
+import torch as torch  # noqa: F401  (bfloat16)
+import transformers as tf
 
 path = sys.argv[1] if len(sys.argv) > 1 else \
     "/home/jovyan/h800fast/wangzekai/Step-3.7-Flash"
