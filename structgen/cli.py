@@ -300,7 +300,8 @@ def cmd_precompute(args) -> int:
             emb = {}
     todo = [p for p in prompts if p not in emb]
     if not todo:
-        print("[precompute] everything already encoded"); return 0
+        print("[precompute] everything already encoded")
+        return 0
 
     t0 = time.time()
     done = len(emb)
