@@ -411,18 +411,24 @@ class StepfunBackbone(BackboneAdapter):
         proj_device = proj_device or self._device_marker.device
         in_device = next(self._model.parameters()).device
         proc = self._processor
+        tok = getattr(proc, "tokenizer", None)
+        if tok is None:
+            import transformers as _tf2
+            tok = _tf2.AutoTokenizer.from_pretrained(
+                self.pretrained_path, trust_remote_code=True)
         chats = [proc.apply_chat_template(
             [{"role": "user", "content": [{"type": "text", "text": t}]}],
             add_generation_prompt=True, tokenize=False) for t in texts]
         out = []
         for i in range(0, len(chats), batch):
             chunk = chats[i:i + batch]
-            enc = proc(text=chunk, return_tensors="pt", padding=True, truncation=True,
-                       max_length=96)
+            # use the tokenizer directly (the Step3 processor doesn't pad
+            # text-only lists); tokenizers ALWAYS pad with padding=True.
+            enc = tok(chunk, return_tensors="pt", padding=True,
+                      truncation=True, max_length=96)
             ids = enc["input_ids"].to(in_device)
             attn = enc["attention_mask"].to(in_device)
-            L = ids.shape[1]
-            pos = torch.arange(L, device=in_device).unsqueeze(0).expand_as(ids)
+            pos = torch.arange(ids.shape[1], device=in_device).unsqueeze(0).expand_as(ids)
             try:
                 self._model(input_ids=ids, attention_mask=attn, position_ids=pos,
                             use_cache=False)
