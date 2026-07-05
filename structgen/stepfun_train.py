@@ -235,10 +235,13 @@ def generate_ep(cfg: StructGenConfig, vae_path, ckpt_path, stepfun_path, prompt,
     vae.eval()
 
     sf = load_stepfun_ep(stepfun_path)
-    net = StepfunGenNet(sf, _find_embed(sf), _find_llm_layers(sf), C, L)
+    state = torch.load(ckpt_path, map_location=dev, weights_only=False)
+    dec_dim = state.get("dec_dim", 1024)
+    dec_blocks = state.get("dec_blocks", 12)
+    net = StepfunGenNet(sf, _find_embed(sf), _find_llm_layers(sf), C, L,
+                        dec_dim=dec_dim, dec_blocks=dec_blocks)
     for p in net.parameters():
         p.data = p.data.to(dev)
-    state = torch.load(ckpt_path, map_location=dev, weights_only=False)
     dec_sd = {k.replace("module.", ""): v for k, v in state["decoder"].items()}
     net.decoder.load_state_dict(dec_sd)
     net.geom_in.load_state_dict(state["geom_in"])
