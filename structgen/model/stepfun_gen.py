@@ -113,7 +113,9 @@ class StepfunGenNet(nn.Module):
         def hk(_m, _i, out):
             h = out[0] if isinstance(out, (tuple, list)) else out
             s = self._cur_text_len
-            self._bufs[bi].append(h[:, s:s + self.n_toks].detach())
+            # NOTE: no .detach() — we WANT gradients to flow back through Stepfun
+            # (weights frozen) so geom_in / t_embed learn to align soft tokens.
+            self._bufs[bi].append(h[:, s:s + self.n_toks])
         return hk
 
     @property
@@ -135,15 +137,17 @@ class StepfunGenNet(nn.Module):
             buf.clear()
         self._cur_text_len = text_ids.shape[1]
 
+        mdtype = self._embed.weight.dtype              # bf16 (the frozen model's dtype)
         text_emb = self._embed(text_ids.to(dev))
         g = noisy_latent.permute(0, 2, 3, 4, 1).reshape(B, L * L * L, self.latent_ch)
-        g_tok = self.geom_in(g.to(dev)) + self._timestep(t).to(dev).unsqueeze(1).to(g.dtype)
-        inputs_embeds = torch.cat([text_emb, g_tok], dim=1)
+        g_tok = self.geom_in(g.to(dev)) + self._timestep(t).to(dev).unsqueeze(1)
+        inputs_embeds = torch.cat([text_emb, g_tok], dim=1).to(mdtype)
         am = torch.ones(B, inputs_embeds.shape[1], dtype=torch.long, device=dev)
         pos = torch.arange(inputs_embeds.shape[1], device=dev).unsqueeze(0).expand(B, -1)
-        with torch.no_grad():
-            self._model(inputs_embeds=inputs_embeds, attention_mask=am,
-                        position_ids=pos, use_cache=False)
+        # NOTE: NOT under no_grad — gradients flow through the frozen Stepfun so
+        # geom_in/t_embed learn. Weights stay frozen; only activations are stored.
+        self._model(inputs_embeds=inputs_embeds, attention_mask=am,
+                    position_ids=pos, use_cache=False)
 
         # residual fusion of multi-depth geom representations
         head_dev = self.proj[self._base].weight.device
