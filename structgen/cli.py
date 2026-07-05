@@ -28,25 +28,23 @@ from structgen.config import (
 
 def _build_cfg(args) -> StructGenConfig:
     cfg = StructGenConfig()
+    g = lambda n, d: getattr(args, n, d)  # noqa: E731  (subcommands differ)
     cfg.backbone = BackboneConfig(
-        kind=args.backbone, pretrained_path=args.pretrained_path,
-        text_emb_path=getattr(args, "text_emb", None),
-        image_size=args.image_size,
+        kind=g("backbone", "proxy"), pretrained_path=g("pretrained_path", None),
+        text_emb_path=g("text_emb", None), image_size=g("image_size", 224),
     )
     cfg.decoder = DecoderConfig(
-        grid_res=args.res, base_channels=args.base_ch,
-        channel_mults=tuple(int(m) for m in args.mults.split(",")),
-        num_blocks=args.blocks,
+        grid_res=g("res", 64), base_channels=g("base_ch", 64),
+        channel_mults=tuple(int(m) for m in str(g("mults", "1,2,4,8")).split(",")),
+        num_blocks=g("blocks", 2),
+        latent_res=g("latent_res", cfg.decoder.latent_res),
+        latent_ch=g("latent_ch", cfg.decoder.latent_ch),
+        vae_base=g("vae_base", cfg.decoder.vae_base),
+        flow_base=g("flow_base", cfg.decoder.flow_base),
     )
-    g = lambda n, d: getattr(args, n, d)  # noqa: E731
-    # latent / vae knobs (present on the latent subcommands; harmless default)
-    cfg.decoder.latent_res = g("latent_res", cfg.decoder.latent_res)
-    cfg.decoder.latent_ch = g("latent_ch", cfg.decoder.latent_ch)
-    cfg.decoder.vae_base = g("vae_base", cfg.decoder.vae_base)
-    cfg.decoder.flow_base = g("flow_base", cfg.decoder.flow_base)
     cfg.train = TrainConfig(
         batch_size=g("batch", 4), lr=g("lr", 1e-4), max_steps=g("steps", 5000),
-        device=args.device, out_dir=g("out_dir", "outputs/structgen"),
+        device=g("device", "cuda"), out_dir=g("out_dir", "outputs/structgen"),
         log_every=g("log_every", 20), save_every=g("save_every", 1000),
     )
     cfg.num_samples = g("num_samples", 2048)
