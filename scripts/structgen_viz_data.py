@@ -114,6 +114,12 @@ def main():
         plt.savefig(f"{outdir}/surface3d.png", dpi=120)
         plt.close()
         print(f"saved {outdir}/surface3d.png (smooth surface, 3 angles)")
+
+        # also export STL for interactive viewing (open in MeshLab / online viewer)
+        from structgen.model.meshing import Mesh, write_stl
+        mesh = Mesh(vertices=verts.astype(np.float32), faces=faces.astype(np.int64))
+        write_stl(mesh, f"{outdir}/shape.stl")
+        print(f"saved {outdir}/shape.stl — open in a 3D viewer for interactive view")
     else:
         print("skipped 3D surface (marching cubes failed)")
 
