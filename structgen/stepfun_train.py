@@ -20,7 +20,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
 from structgen.config import StructGenConfig
-from structgen.model.stepfun_gen import StepfunGenNet, _build_stepfun, _find_embed, _find_last_layer
+from structgen.model.stepfun_gen import StepfunGenNet, _build_stepfun, _find_embed, _find_llm_layers
 from structgen.model.vae import VoxelVAE
 from structgen.data.nrrd import read_nrrd_occ
 
@@ -77,8 +77,8 @@ def train(cfg: StructGenConfig, vae_path, stepfun_path, nrrd_dir, captions_csv,
     print("[sgen] loading Stepfun (device_map=auto across GPUs)...")
     sf = _build_stepfun(stepfun_path, max_mem)
     embed = _find_embed(sf)
-    last = _find_last_layer(sf)
-    net = StepfunGenNet(sf, embed, last, C, L).to(dev)
+    llm_layers = _find_llm_layers(sf)
+    net = StepfunGenNet(sf, embed, llm_layers, C, L).to(dev)
     ntrain = sum(p.numel() for p in net.parameters() if p.requires_grad) / 1e6
     print(f"[sgen] Stepfun on {n_gpu} GPU(s); trainable params {ntrain:.2f}M "
           f"(proj+head; 150B frozen)")
@@ -137,7 +137,7 @@ def generate(cfg: StructGenConfig, vae_path, ckpt_path, stepfun_path, prompt,
     for i in range(1, n_gpu):
         max_mem[i] = "78GiB"
     sf = _build_stepfun(stepfun_path, max_mem)
-    net = StepfunGenNet(sf, _find_embed(sf), _find_last_layer(sf), C, L).to(dev)
+    net = StepfunGenNet(sf, _find_embed(sf), _find_llm_layers(sf), C, L).to(dev)
     net.load_state_dict(torch.load(ckpt_path, map_location=dev)["net"])
     net.eval()
     import transformers as _tf

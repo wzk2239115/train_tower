@@ -37,6 +37,25 @@ def _build_stepfun(path: str, max_mem: dict):
     return model
 
 
+def _find_llm_layers(model):
+    """The LLM transformer-layer ModuleList (skip vision). Returns the list."""
+    import torch.nn as _nn
+    best = None
+    for name, mod in model.named_modules():
+        if isinstance(mod, _nn.ModuleList) and len(mod) >= 10:
+            low = name.lower()
+            if any(k in low for k in ("vision", "image", "visual", "encoder")):
+                continue
+            score = len(mod) + (200 if "language" in low else (150 if "text" in low else 0))
+            if best is None or score > best[0]:
+                best = (score, name, mod)
+    return best[2]  # type: ignore[index]
+
+
+def _find_last_layer(model):
+    return _find_llm_layers(model)[-1]
+
+
 def _find_embed(model):
     import torch.nn as _nn
     for attr in ("embed_tokens", "wte", "shared"):
@@ -49,57 +68,53 @@ def _find_embed(model):
     raise RuntimeError("token embedding not found")
 
 
-def _find_last_layer(model):
-    """The LLM transformer-layer ModuleList's last element (skip vision)."""
-    import torch.nn as _nn
-    best = None
-    for name, mod in model.named_modules():
-        if isinstance(mod, _nn.ModuleList) and len(mod) >= 10:
-            low = name.lower()
-            if any(k in low for k in ("vision", "image", "visual", "encoder")):
-                continue
-            score = len(mod) + (200 if "language" in low else (150 if "text" in low else 0))
-            if best is None or score > best[0]:
-                best = (score, name, mod)
-    return best[2][-1]  # type: ignore[index]
-
-
 class StepfunGenNet(nn.Module):
     """Geometry latent <-> Stepfun soft tokens -> predicted x0 latent.
 
-    forward(noisy_latent, t, text_ids, text_lens) -> predicted clean latent.
+    Multi-depth residual read-out: hooks several LLM layers (not just the last)
+    and fuses their geom-token representations into the output with learnable
+    gates (init 0 → starts as the deepest layer, learns to add shallower ones).
+    This ingests the backbone's computation at every depth into the generation.
     """
 
-    def __init__(self, stepfun_model, embed, last_layer, latent_ch, latent_res,
-                 hidden=4096, n_toks=None):
+    def __init__(self, stepfun_model, embed, llm_layers, latent_ch, latent_res,
+                 hidden=4096, n_toks=None, hook_fracs=(0.25, 0.5, 0.75, 1.0)):
         super().__init__()
-        # store the huge model UNTRACKED (object.__setattr__) so .to() won't move it
         object.__setattr__(self, "_model", stepfun_model)
         object.__setattr__(self, "_embed", embed)
-        object.__setattr__(self, "_last_layer", last_layer)
         self.hidden = hidden
         self.latent_ch = latent_ch
         self.latent_res = latent_res
-        self.n_toks = n_toks or (latent_res ** 3)   # geom tokens = flattened latent grid
+        self.n_toks = n_toks or (latent_res ** 3)
 
-        # trainable: latent_ch -> hidden (soft-token projection) + timestep embed
+        # geom-token projection (latent_ch -> hidden) + timestep
         self.geom_in = nn.Linear(latent_ch, hidden)
         self.t_embed = nn.Sequential(nn.Linear(hidden, hidden), nn.SiLU(),
                                      nn.Linear(hidden, hidden))
-        # trainable: hidden -> latent_ch (read-out head)
-        self.head = nn.Sequential(nn.LayerNorm(hidden), nn.Linear(hidden, hidden),
-                                  nn.GELU(), nn.Linear(hidden, latent_ch))
-        # placeholder so .to()/device works (the big model is untracked)
+
+        # multi-depth hooks: pick layer indices from the LLM ModuleList
+        n = len(llm_layers)
+        self.hook_idx = [min(int(f * n) - 1, n - 1) for f in hook_fracs]
+        self.hook_idx = sorted(set(self.hook_idx))
+        self.proj = nn.ModuleList([nn.Linear(hidden, latent_ch) for _ in self.hook_idx])
+        # residual gates: init 0 → deepest layer dominates at start, shallower
+        # layers are added residually as they're learned. We use the LAST hooked
+        # layer as the base (gate fixed at 1); others learn from 0.
+        self.gate = nn.Parameter(torch.zeros(len(self.hook_idx)))   # learned for non-base
+        self._base = self.hook_idx.index(max(self.hook_idx))         # which hook is the base
+
         self._dev = nn.Parameter(torch.zeros(1), requires_grad=False)
+        self._bufs: list[list] = [[] for _ in self.hook_idx]
+        self._cur_text_len = 0
+        for bi, idx in enumerate(self.hook_idx):
+            llm_layers[idx].register_forward_hook(self._make_hook(bi))
 
-        # hook the last LLM layer to capture hidden states
-        self._captured: list = []
-        last_layer.register_forward_hook(self._hook)
-
-    def _hook(self, _m, _i, out):
-        h = out[0] if isinstance(out, (tuple, list)) else out
-        self._captured.clear()
-        self._captured.append(h)
+    def _make_hook(self, bi):
+        def hk(_m, _i, out):
+            h = out[0] if isinstance(out, (tuple, list)) else out
+            s = self._cur_text_len
+            self._bufs[bi].append(h[:, s:s + self.n_toks].detach())
+        return hk
 
     @property
     def device(self):
@@ -113,31 +128,30 @@ class StepfunGenNet(nn.Module):
         return self.t_embed(emb.to(self.t_embed[0].weight.dtype))
 
     def forward(self, noisy_latent, t, text_ids, text_lens) -> torch.Tensor:
-        """noisy_latent (B,C,L,L,L); text_ids (B,Lt) padded
-        text_lens (B,).
-        Returns predicted x0 latent (B,C,L,L,L)."""
         B = noisy_latent.shape[0]
         L = self.latent_res
         dev = self._embed.weight.device
+        for buf in self._bufs:
+            buf.clear()
+        self._cur_text_len = text_ids.shape[1]
 
-        # text embeddings (frozen)
-        text_emb = self._embed(text_ids.to(dev))            # (B,Lt,hidden)
-
-        # geom soft tokens: flatten latent grid -> project -> add timestep
+        text_emb = self._embed(text_ids.to(dev))
         g = noisy_latent.permute(0, 2, 3, 4, 1).reshape(B, L * L * L, self.latent_ch)
-        g_tok = self.geom_in(g.to(dev))                     # (B, n_toks, hidden)
-        g_tok = g_tok + self._timestep(t).to(g_tok.dtype).unsqueeze(1)
-
-        inputs_embeds = torch.cat([text_emb, g_tok], dim=1)  # (B, Lt+n_toks, hidden)
+        g_tok = self.geom_in(g.to(dev)) + self._timestep(t).to(dev).unsqueeze(1).to(g.dtype)
+        inputs_embeds = torch.cat([text_emb, g_tok], dim=1)
         am = torch.ones(B, inputs_embeds.shape[1], dtype=torch.long, device=dev)
         pos = torch.arange(inputs_embeds.shape[1], device=dev).unsqueeze(0).expand(B, -1)
-
         with torch.no_grad():
             self._model(inputs_embeds=inputs_embeds, attention_mask=am,
                         position_ids=pos, use_cache=False)
-        h = self._captured[0]                                # (B, Lt+n_toks, hidden)
-        # slice geom positions (right after text) and read out
-        geom_h = h[:, text_ids.shape[1]:text_ids.shape[1] + self.n_toks]
-        pred = self.head(geom_h)                             # (B, n_toks, latent_ch)
-        pred = pred.reshape(B, L, L, L, self.latent_ch).permute(0, 4, 1, 2, 3)
-        return pred
+
+        # residual fusion of multi-depth geom representations
+        head_dev = self.proj[self._base].weight.device
+        out = self.proj[self._base](self._bufs[self._base][0].to(head_dev))   # base (deepest)
+        gates = self.gate.sigmoid()
+        for i, buf in enumerate(self._bufs):
+            if i == self._base:
+                continue
+            out = out + gates[i] * self.proj[i](buf[0].to(head_dev))          # residual adds
+        out = out.reshape(B, L, L, L, self.latent_ch).permute(0, 4, 1, 2, 3)
+        return out
