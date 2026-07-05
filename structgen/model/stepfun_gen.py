@@ -119,12 +119,14 @@ class GeomDecoder(nn.Module):
 
     def forward(self, feats, t):
         # feats: list of (B, n_toks, 4096) from Stepfun at several depths
+        import torch.utils.checkpoint as _ck
         proj = [p(f.to(p.weight.device).to(p.weight.dtype)) for p, f in zip(self.proj_in, feats)]
         t_emb = self._timestep(t).unsqueeze(1).to(proj[0].dtype)   # (B,1,dim)
         x = sum(proj) + t_emb                                      # residual seed
         for i, blk in enumerate(self.blocks):
             x = x + proj[i % self.n_inject]                        # dense residual re-injection (round-robin)
-            x = blk(x)
+            # gradient checkpointing: deep decoders only store ~1 block's activation
+            x = _ck.checkpoint(blk, x, use_reentrant=False) if self.training else blk(x)
         return self.out(self.out_norm(x))                         # (B, n_toks, latent_ch)
 
 
