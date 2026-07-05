@@ -88,9 +88,16 @@ class StepfunGenNet(nn.Module):
         self.n_toks = n_toks or (latent_res ** 3)
 
         # geom-token projection (latent_ch -> hidden) + timestep
+        # FROZEN: backprop through the 150B Stepfun is memory-prohibitive (MoE
+        # float32 upcast), so the forward is no_grad and these can't train.
+        # Only the read-out proj + gates (after Stepfun) are trained.
         self.geom_in = nn.Linear(latent_ch, hidden)
         self.t_embed = nn.Sequential(nn.Linear(hidden, hidden), nn.SiLU(),
                                      nn.Linear(hidden, hidden))
+        for p in self.geom_in.parameters():
+            p.requires_grad_(False)
+        for p in self.t_embed.parameters():
+            p.requires_grad_(False)
 
         # multi-depth hooks: pick layer indices from the LLM ModuleList
         n = len(llm_layers)
@@ -113,9 +120,7 @@ class StepfunGenNet(nn.Module):
         def hk(_m, _i, out):
             h = out[0] if isinstance(out, (tuple, list)) else out
             s = self._cur_text_len
-            # NOTE: no .detach() — we WANT gradients to flow back through Stepfun
-            # (weights frozen) so geom_in / t_embed learn to align soft tokens.
-            self._bufs[bi].append(h[:, s:s + self.n_toks])
+            self._bufs[bi].append(h[:, s:s + self.n_toks].detach())
         return hk
 
     @property
@@ -144,10 +149,14 @@ class StepfunGenNet(nn.Module):
         inputs_embeds = torch.cat([text_emb, g_tok], dim=1).to(mdtype)
         am = torch.ones(B, inputs_embeds.shape[1], dtype=torch.long, device=dev)
         pos = torch.arange(inputs_embeds.shape[1], device=dev).unsqueeze(0).expand(B, -1)
-        # NOTE: NOT under no_grad — gradients flow through the frozen Stepfun so
-        # geom_in/t_embed learn. Weights stay frozen; only activations are stored.
-        self._model(inputs_embeds=inputs_embeds, attention_mask=am,
-                    position_ids=pos, use_cache=False)
+        # Stepfun forward under no_grad: backprop through the full 150B is
+        # memory-prohibitive (MoE experts upcast to float32 -> activations blow
+        # up). So geom_in/t_embed are FROZEN (fixed soft-token projection) and
+        # only the read-out head + gates are trained. Stepfun's forward still
+        # transforms the geom tokens across all 45 layers — the head reads that.
+        with torch.no_grad():
+            self._model(inputs_embeds=inputs_embeds, attention_mask=am,
+                        position_ids=pos, use_cache=False)
 
         # residual fusion of multi-depth geom representations
         head_dev = self.proj[self._base].weight.device
