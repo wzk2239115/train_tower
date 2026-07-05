@@ -7,7 +7,8 @@ import sys, os, csv, glob
 import numpy as np
 import gzip
 
-def read_nrrd(path):
+def read_nrrd(path, res=128):
+    """Read NRRD at native resolution (128³) or downsample."""
     raw = open(path, "rb").read()
     sep = raw.index(b"\n\n")
     arr = np.frombuffer(gzip.decompress(raw[sep+2:]), dtype=np.uint8)
@@ -18,6 +19,9 @@ def read_nrrd(path):
             parts = line.split(); ch, size = int(parts[1]), int(parts[2]); break
     arr = arr.reshape(ch, size, size, size)
     occ = (arr[:3].max(0) > 0).astype(np.float32)
+    if res < size:
+        step = size // res
+        occ = occ[::step, ::step, ::step]
     return occ
 
 def main():
@@ -79,21 +83,39 @@ def main():
     plt.close()
     print(f"saved {outdir}/ortho.png")
 
-    # 3) 3D voxel plot (downsampled)
-    fig = plt.figure(figsize=(10, 10))
-    ax = fig.add_subplot(111, projection="3d")
-    step = R // 32 or 1
-    small = occ[::step, ::step, ::step]
-    colors = np.zeros((*small.shape, 4))
-    colors[..., 3] = small * 0.5  # alpha
-    colors[..., 0] = 0.7; colors[..., 1] = 0.5; colors[..., 2] = 0.3  # brown-ish
-    ax.voxels(small, facecolors=colors, edgecolors=None)
-    ax.set_xlabel("X"); ax.set_ylabel("Y"); ax.set_zlabel("Z")
-    plt.title(f"3D voxel view\n{cap[:50]}", fontsize=9)
-    plt.tight_layout()
-    plt.savefig(f"{outdir}/voxel3d.png", dpi=100)
-    plt.close()
-    print(f"saved {outdir}/voxel3d.png")
+    # 3) Smooth 3D surface via marching cubes (native 128³ resolution)
+    from skimage import measure as _skm
+    from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+
+    occ_full = read_nrrd(path, res=128)  # native resolution
+    pad = np.pad(occ_full, 1, mode="constant", constant_values=0)
+    try:
+        verts, faces, _, _ = _skm.marching_cubes(pad, level=0.5,
+            spacing=(2/128, 2/128, 2/128))
+        verts = verts - 1.0
+    except Exception as e:
+        print(f"marching cubes failed: {e}"); verts, faces = None, None
+
+    if verts is not None:
+        fig, axes = plt.subplots(1, 3, figsize=(18, 6),
+                                 subplot_kw={"projection": "3d"})
+        views = [(20, 30, "front"), (20, 90, "side"), (40, -60, "perspective")]
+        for ax, (elev, azim, label) in zip(axes, views):
+            mesh = Poly3DCollection(verts[faces], alpha=0.8)
+            mesh.set_facecolor([0.7, 0.5, 0.3, 0.8])
+            ax.add_collection3d(mesh)
+            ax.set_xlim(-1, 1); ax.set_ylim(-1, 1); ax.set_zlim(-1, 1)
+            ax.set_box_aspect([1, 1, 1])
+            ax.view_init(elev=elev, azim=azim)
+            ax.set_title(label)
+            ax.set_xlabel("X"); ax.set_ylabel("Y"); ax.set_zlabel("Z")
+        plt.suptitle(f"3D surface (128³ marching cubes)\n{cap[:60]}", fontsize=10)
+        plt.tight_layout()
+        plt.savefig(f"{outdir}/surface3d.png", dpi=120)
+        plt.close()
+        print(f"saved {outdir}/surface3d.png (smooth surface, 3 angles)")
+    else:
+        print("skipped 3D surface (marching cubes failed)")
 
     # 4) If there's a .png beside the .nrrd (ShapeNet rendered view)
     png_path = path.replace(".nrrd", ".png")
