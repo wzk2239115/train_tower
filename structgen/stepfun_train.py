@@ -259,8 +259,8 @@ def generate_ep(cfg: StructGenConfig, vae_path, ckpt_path, stepfun_path, prompt,
     dt = 1.0 / n_steps
     for i in range(n_steps):
         tt = torch.full((1,), i * dt, device=dev)
-        fc = net.decoder(net.extract(z, tt, ids)).reshape(1, L, L, L, C).permute(0, 4, 1, 2, 3)
-        fu = net.decoder(net.extract(z, tt, null_ids)).reshape(1, L, L, L, C).permute(0, 4, 1, 2, 3)
+        fc = net.decoder(net.extract(z, tt, ids), tt).reshape(1, L, L, L, C).permute(0, 4, 1, 2, 3)
+        fu = net.decoder(net.extract(z, tt, null_ids), tt).reshape(1, L, L, L, C).permute(0, 4, 1, 2, 3)
         x0 = fu + cfg_scale * (fc - fu)
         z = z + (x0 - z) * dt
     occ = (torch.sigmoid(vae.dec(z)) > 0.5)[0, 0].float().cpu().numpy()
