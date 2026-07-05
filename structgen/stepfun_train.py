@@ -35,7 +35,7 @@ class _TextOcc(Dataset):
         for n in sorted(glob.glob(os.path.join(nrrd_dir, "*.nrrd"))):
             mid = os.path.basename(n)[:-5]
             if mid in desc:
-                self.items.append((desc[mid], read_nrrd_occ(n, res)))
+                self.items.append((desc[mid], n))   # (caption, path) — lazy read
         self.res = res
         self.tok = tokenizer
         self.max_len = max_len
@@ -44,7 +44,8 @@ class _TextOcc(Dataset):
         return len(self.items)
 
     def __getitem__(self, i):
-        cap, occ = self.items[i]
+        cap, path = self.items[i]
+        occ = read_nrrd_occ(path, self.res)
         ids = self.tok(cap, truncation=True, max_length=self.max_len)["input_ids"]
         return {"occ": torch.from_numpy(occ).float(), "ids": torch.tensor(ids)}
 

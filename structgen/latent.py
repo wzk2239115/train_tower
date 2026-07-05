@@ -26,12 +26,16 @@ from structgen.model.voxelnnet import VoxelVelocityNet
 
 
 class _OccDataset(Dataset):
-    """Real ShapeNet occupancy + caption pairs (from NRRD + captions CSV)."""
+    """Real ShapeNet occupancy + caption pairs (from NRRD + captions CSV).
+
+    Lazy: stores (caption, path) and reads one NRRD per __getitem__ — so startup
+    is instant (no upfront load of 15k files) and the GPU is busy immediately.
+    """
 
     def __init__(self, nrrd_dir, captions_csv, res, image_size):
         import os as _os
 
-        from structgen.data.nrrd import read_nrrd_occ
+        from structgen.data.nrrd import read_nrrd_occ  # noqa: F401
         from structgen.data.dataset import _render_sketch, sketch_to_tensor
 
         desc = {}
@@ -42,8 +46,7 @@ class _OccDataset(Dataset):
         for n in sorted(glob.glob(_os.path.join(nrrd_dir, "*.nrrd"))):
             mid = _os.path.basename(n)[:-5]
             if mid in desc:
-                occ = read_nrrd_occ(n, res)
-                self.items.append((desc[mid], occ))
+                self.items.append((desc[mid], n))   # (caption, PATH) — no read here
         self.res = res
         self.image_size = image_size
         self._render_sketch = _render_sketch
@@ -53,7 +56,9 @@ class _OccDataset(Dataset):
         return len(self.items)
 
     def __getitem__(self, i):
-        cap, occ = self.items[i]
+        from structgen.data.nrrd import read_nrrd_occ
+        cap, path = self.items[i]
+        occ = read_nrrd_occ(path, self.res)
         sketch = self._sketch_to_tensor(self._render_sketch(occ, self.image_size),
                                         self.image_size)
         return {"occ": torch.from_numpy(occ).float(), "prompt": cap,
@@ -77,11 +82,12 @@ def train_vae(cfg: StructGenConfig, nrrd_dir: str, captions_csv: str,
               steps: int = 20000, batch: int = 16, beta: float = 1e-3,
               out: str = "outputs/structgen/vae.pt") -> str:
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"[vae] device={dev} — building dataset (lazy, instant)...")
     R = cfg.decoder.grid_res
     vae = VoxelVAE(R, cfg.decoder.latent_res, cfg.decoder.latent_ch,
                    base=cfg.decoder.vae_base).to(dev)
     ds = _OccDataset(nrrd_dir, captions_csv, R, cfg.backbone.image_size)
-    loader = DataLoader(ds, batch_size=batch, shuffle=True, num_workers=2,
+    loader = DataLoader(ds, batch_size=batch, shuffle=True, num_workers=4,
                         collate_fn=_collate, drop_last=True)
     opt = torch.optim.AdamW(vae.parameters(), lr=2e-4)
     print(f"[vae] {len(ds)} shapes, latent {cfg.decoder.latent_ch}x"
