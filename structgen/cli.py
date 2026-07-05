@@ -192,6 +192,39 @@ def cmd_generate_latent(args) -> int:
     return 0
 
 
+def cmd_train_stepfun_gen(args) -> int:
+    """Train the Stepfun-as-denoiser: latent flows THROUGH the 150B model."""
+    from structgen.config import StructGenConfig
+    from structgen.stepfun_train import train as sg_train
+    cfg = StructGenConfig()
+    cfg.decoder.grid_res = args.res
+    cfg.decoder.latent_res = args.latent_res
+    cfg.decoder.latent_ch = args.latent_ch
+    cfg.decoder.vae_base = args.vae_base
+    sg_train(cfg, args.vae, args.pretrained_path, args.nrrd_dir, args.captions,
+             steps=args.steps, batch=args.batch, out=args.out)
+    return 0
+
+
+def cmd_generate_stepfun_gen(args) -> int:
+    from structgen.config import StructGenConfig
+    from structgen.stepfun_train import generate as sg_gen
+    from structgen.model.meshing import occupancy_to_mesh, export_mesh
+    cfg = StructGenConfig()
+    cfg.decoder.grid_res = args.res
+    cfg.decoder.latent_res = args.latent_res
+    cfg.decoder.latent_ch = args.latent_ch
+    cfg.decoder.vae_base = args.vae_base
+    occ = sg_gen(cfg, args.vae, args.ckpt, args.pretrained_path, args.prompt,
+                 cfg_scale=args.cfg_scale, n_steps=args.sample_steps)
+    if args.out:
+        mesh = occupancy_to_mesh(occ)
+        if mesh is not None:
+            export_mesh(mesh, args.out)
+            print(f"[gen] mesh {len(mesh)} faces -> {args.out}")
+    return 0
+
+
 def cmd_convert_abc(args) -> int:
     """Convert a directory of ABC STL meshes → per-model .npz (field+surface+
     prompt) ready for StructGenDataset. Extract the ``.7z`` first (py7zr)."""
@@ -462,6 +495,36 @@ def main(argv=None) -> int:
     gl.add_argument("--sample-steps", type=int, default=50)
     gl.add_argument("--out", default="outputs/structgen/gen_latent.stl")
     gl.set_defaults(func=cmd_generate_latent)
+
+    sg = sub.add_parser("train-stepfun-gen",
+                        help="Stepfun-as-denoiser: latent flows THROUGH the 150B model")
+    sg.add_argument("--vae", required=True)
+    sg.add_argument("--pretrained-path", required=True)
+    sg.add_argument("--nrrd-dir", default="data/shapenet/nrrd")
+    sg.add_argument("--captions", default="captions.tablechair.csv")
+    sg.add_argument("--res", type=int, default=64)
+    sg.add_argument("--latent-res", type=int, default=16)
+    sg.add_argument("--latent-ch", type=int, default=32)
+    sg.add_argument("--vae-base", type=int, default=24)
+    sg.add_argument("--steps", type=int, default=5000)
+    sg.add_argument("--batch", type=int, default=2)
+    sg.add_argument("--out", default="outputs/structgen/stepfun_gen.pt")
+    sg.set_defaults(func=cmd_train_stepfun_gen)
+
+    sgg = sub.add_parser("generate-stepfun-gen",
+                         help="sample via Stepfun-as-denoiser → VAE decode → STL")
+    sgg.add_argument("--vae", required=True)
+    sgg.add_argument("--ckpt", required=True)
+    sgg.add_argument("--pretrained-path", required=True)
+    sgg.add_argument("--prompt", required=True)
+    sgg.add_argument("--res", type=int, default=64)
+    sgg.add_argument("--latent-res", type=int, default=16)
+    sgg.add_argument("--latent-ch", type=int, default=32)
+    sgg.add_argument("--vae-base", type=int, default=24)
+    sgg.add_argument("--cfg-scale", type=float, default=3.0)
+    sgg.add_argument("--sample-steps", type=int, default=30)
+    sgg.add_argument("--out", default="outputs/structgen/gen_stepfun.stl")
+    sgg.set_defaults(func=cmd_generate_stepfun_gen)
 
     args = p.parse_args(argv)
     return args.func(args)
