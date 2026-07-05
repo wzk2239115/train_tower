@@ -86,11 +86,11 @@ def train_ep(cfg: StructGenConfig, vae_path, stepfun_path, nrrd_dir, captions_cs
     sf = load_stepfun_ep(stepfun_path)
     net = StepfunGenNet(sf, _find_embed(sf), _find_llm_layers(sf), C, L,
                         dec_dim=dec_dim, dec_blocks=dec_blocks)
-    # only the decoder trains → DDP it; sf + geom_in stay frozen/replicated
-    net.decoder = DDP(net.decoder.to(dev), device_ids=[local])
+    # move ALL tracked params to this rank's GPU (incl. frozen geom_in/t_embed_sf),
+    # then DDP only the trainable decoder. The frozen Stepfun is already on dev.
     for p in net.parameters():
-        if p.requires_grad:
-            p.data = p.data.to(dev)
+        p.data = p.data.to(dev)
+    net.decoder = DDP(net.decoder, device_ids=[local])
 
     import transformers as _tf
     tok = _tf.AutoTokenizer.from_pretrained(stepfun_path, trust_remote_code=True)
