@@ -226,6 +226,21 @@ def cmd_train_stepfun_gen_ep(args) -> int:
     return 0
 
 
+def cmd_generate_stepfun_gen_ep(args) -> int:
+    """EP generation (torchrun --nproc=8). All GPUs busy."""
+    from structgen.config import StructGenConfig
+    from structgen.stepfun_train import generate_ep
+    _maybe_init_distributed()
+    cfg = StructGenConfig()
+    cfg.decoder.grid_res = args.res
+    cfg.decoder.latent_res = args.latent_res
+    cfg.decoder.latent_ch = args.latent_ch
+    cfg.decoder.vae_base = args.vae_base
+    generate_ep(cfg, args.vae, args.ckpt, args.pretrained_path, args.prompt,
+                cfg_scale=args.cfg_scale, n_steps=args.sample_steps, out=args.out)
+    return 0
+
+
 def cmd_generate_stepfun_gen(args) -> int:
     from structgen.config import StructGenConfig
     from structgen.stepfun_train import generate as sg_gen
@@ -551,6 +566,21 @@ def main(argv=None) -> int:
     sgep.add_argument("--batch", type=int, default=2)
     sgep.add_argument("--out", default="outputs/structgen/sgen_ep.pt")
     sgep.set_defaults(func=cmd_train_stepfun_gen_ep)
+
+    sgepg = sub.add_parser("generate-stepfun-gen-ep",
+                           help="EP generation (torchrun --nproc=8, all GPUs busy)")
+    sgepg.add_argument("--vae", required=True)
+    sgepg.add_argument("--ckpt", required=True)
+    sgepg.add_argument("--pretrained-path", required=True)
+    sgepg.add_argument("--prompt", required=True)
+    sgepg.add_argument("--res", type=int, default=64)
+    sgepg.add_argument("--latent-res", type=int, default=8)
+    sgepg.add_argument("--latent-ch", type=int, default=32)
+    sgepg.add_argument("--vae-base", type=int, default=24)
+    sgepg.add_argument("--cfg-scale", type=float, default=3.0)
+    sgepg.add_argument("--sample-steps", type=int, default=30)
+    sgepg.add_argument("--out", default="outputs/structgen/gen_ep.stl")
+    sgepg.set_defaults(func=cmd_generate_stepfun_gen_ep)
 
     sgg = sub.add_parser("generate-stepfun-gen",
                          help="sample via Stepfun-as-denoiser → VAE decode → STL")

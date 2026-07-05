@@ -216,6 +216,64 @@ def train(cfg: StructGenConfig, vae_path, stepfun_path, nrrd_dir, captions_csv,
 
 
 @torch.no_grad()
+def generate_ep(cfg: StructGenConfig, vae_path, ckpt_path, stepfun_path, prompt,
+                cfg_scale=3.0, n_steps=30, out="outputs/structgen/gen_ep.stl"):
+    """EP generation: torchrun --nproc=8, each rank runs frozen Stepfun EP forward
+    (all GPUs busy), shared decoder, rank 0 saves the STL."""
+    from structgen.ep_stepfun import load_stepfun_ep
+    from structgen.model.meshing import occupancy_to_mesh, export_mesh
+
+    rank = dist.get_rank()
+    local = int(os.environ.get("LOCAL_RANK", rank))
+    torch.cuda.set_device(local)
+    dev = torch.device(f"cuda:{local}")
+    R = cfg.decoder.grid_res
+    L, C = cfg.decoder.latent_res, cfg.decoder.latent_ch
+
+    vae = VoxelVAE(R, L, C, base=cfg.decoder.vae_base).to(dev)
+    vae.load_state_dict(torch.load(vae_path, map_location=dev)["vae"])
+    vae.eval()
+
+    sf = load_stepfun_ep(stepfun_path)
+    net = StepfunGenNet(sf, _find_embed(sf), _find_llm_layers(sf), C, L)
+    for p in net.parameters():
+        p.data = p.data.to(dev)
+    state = torch.load(ckpt_path, map_location=dev, weights_only=False)
+    dec_sd = {k.replace("module.", ""): v for k, v in state["decoder"].items()}
+    net.decoder.load_state_dict(dec_sd)
+    net.geom_in.load_state_dict(state["geom_in"])
+    net.eval()
+
+    import transformers as _tf
+    tok = _tf.AutoTokenizer.from_pretrained(stepfun_path, trust_remote_code=True)
+    pad = tok.pad_token_id or 0
+    max_len = 48
+
+    def _ids(text):
+        ids = tok(text, truncation=True, max_length=max_len)["input_ids"]
+        return torch.tensor([ids + [pad] * (max_len - len(ids))])
+
+    ids = _ids(prompt)
+    null_ids = _ids("")
+    z = torch.randn(1, C, L, L, L, device=dev)
+    dt = 1.0 / n_steps
+    for i in range(n_steps):
+        tt = torch.full((1,), i * dt, device=dev)
+        fc = net.decoder(net.extract(z, tt, ids)).reshape(1, L, L, L, C).permute(0, 4, 1, 2, 3)
+        fu = net.decoder(net.extract(z, tt, null_ids)).reshape(1, L, L, L, C).permute(0, 4, 1, 2, 3)
+        x0 = fu + cfg_scale * (fc - fu)
+        z = z + (x0 - z) * dt
+    occ = (torch.sigmoid(vae.dec(z)) > 0.5)[0, 0].float().cpu().numpy()
+    if rank == 0:
+        print(f"[ep-gen] solid_frac={occ.mean():.3f}")
+        mesh = occupancy_to_mesh(occ)
+        if mesh is not None:
+            os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+            export_mesh(mesh, out)
+            print(f"[ep-gen] mesh {len(mesh)} faces -> {out}")
+
+
+@torch.no_grad()
 def generate(cfg: StructGenConfig, vae_path, ckpt_path, stepfun_path, prompt,
              cfg_scale=3.0, n_steps=30):
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
