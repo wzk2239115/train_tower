@@ -100,11 +100,13 @@ class GeomDecoder(nn.Module):
         super().__init__()
         self.dim = dim
         self.n_blocks = n_blocks
+        self.n_inject = n_inject
         self.proj_in = nn.ModuleList([nn.Linear(hidden, dim) for _ in range(n_inject)])
         self.t_embed = nn.Sequential(nn.Linear(dim, dim), nn.SiLU(), nn.Linear(dim, dim))
         self.blocks = nn.ModuleList([_DecBlock(dim) for _ in range(n_blocks)])
-        # residual injection points (block indices), one per Stepfun depth
-        self.inject_at = [int((i + 1) * n_blocks / (n_inject + 1)) for i in range(n_inject)]
+        # dense residual injection schedule: cycle through the Stepfun features
+        # so EVERY block re-injects one of them (round-robin). Deep decoders stay
+        # connected to the Stepfun signal throughout, not just at 4 points.
         self.out_norm = nn.LayerNorm(dim)
         self.out = nn.Linear(dim, latent_ch)
 
@@ -119,12 +121,9 @@ class GeomDecoder(nn.Module):
         # feats: list of (B, n_toks, 4096) from Stepfun at several depths
         proj = [p(f.to(p.weight.device).to(p.weight.dtype)) for p, f in zip(self.proj_in, feats)]
         t_emb = self._timestep(t).unsqueeze(1).to(proj[0].dtype)   # (B,1,dim)
-        x = sum(proj) + t_emb                                      # residual seed from Stepfun + t
-        inj_set = set(self.inject_at)
+        x = sum(proj) + t_emb                                      # residual seed
         for i, blk in enumerate(self.blocks):
-            if i in inj_set:
-                k = self.inject_at.index(i)
-                x = x + proj[k]                                    # residual re-injection
+            x = x + proj[i % self.n_inject]                        # dense residual re-injection (round-robin)
             x = blk(x)
         return self.out(self.out_norm(x))                         # (B, n_toks, latent_ch)
 
