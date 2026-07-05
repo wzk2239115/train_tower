@@ -83,44 +83,21 @@ def main():
     plt.close()
     print(f"saved {outdir}/ortho.png")
 
-    # 3) marching cubes → STL (instant) + quick matplotlib preview
+    # 3) marching cubes → STL only (instant, open in a 3D viewer locally)
     from skimage import measure as _skm
+    from structgen.model.meshing import Mesh, write_stl
 
-    occ_mc = read_nrrd(path, res=64)  # 64³ for viz (fewer faces, faster)
+    occ_mc = read_nrrd(path, res=64)
     pad = np.pad(occ_mc, 1, mode="constant", constant_values=0)
     try:
         verts, faces, _, _ = _skm.marching_cubes(pad, level=0.5,
             spacing=(2/64, 2/64, 2/64))
-        verts = verts - 1.0
-    except Exception as e:
-        print(f"marching cubes failed: {e}"); verts, faces = None, None
-
-    if verts is not None:
-        # export STL FIRST (instant — open in a 3D viewer for best quality)
-        from structgen.model.meshing import Mesh, write_stl
         write_stl(Mesh(verts.astype(np.float32), faces.astype(np.int64)),
                   f"{outdir}/shape.stl")
-        print(f"saved {outdir}/shape.stl — open in viewer (e.g. viewstl.com)")
-
-        # matplotlib preview (quick, 64³ = ~20k faces)
-        from mpl_toolkits.mplot3d.art3d import Poly3DCollection
-        fig, axes = plt.subplots(1, 3, figsize=(18, 6),
-                                 subplot_kw={"projection": "3d"})
-        for ax, (elev, azim, label) in zip(axes,
-                [(20, 30, "front"), (20, 90, "side"), (40, -60, "perspective")]):
-            m = Poly3DCollection(verts[faces], alpha=0.8)
-            m.set_facecolor([0.7, 0.5, 0.3, 0.8])
-            ax.add_collection3d(m)
-            ax.set_xlim(-1, 1); ax.set_ylim(-1, 1); ax.set_zlim(-1, 1)
-            ax.set_box_aspect([1, 1, 1]); ax.view_init(elev=elev, azim=azim)
-            ax.set_title(label)
-        plt.suptitle(f"3D (64³ marching cubes)\n{cap[:60]}", fontsize=10)
-        plt.tight_layout()
-        plt.savefig(f"{outdir}/surface3d.png", dpi=100)
-        plt.close()
-        print(f"saved {outdir}/surface3d.png")
-    else:
-        print("skipped 3D (marching cubes failed)")
+        print(f"saved {outdir}/shape.stl ({len(faces)} faces)")
+        print(f"  -> download & open at https://www.viewstl.com")
+    except Exception as e:
+        print(f"marching cubes/STL failed: {e}")
 
     # 4) If there's a .png beside the .nrrd (ShapeNet rendered view)
     png_path = path.replace(".nrrd", ".png")
