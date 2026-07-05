@@ -83,19 +83,37 @@ def main():
     plt.close()
     print(f"saved {outdir}/ortho.png")
 
-    # 3) marching cubes → STL only (instant, open in a 3D viewer locally)
+    # 3) GPU volume rendering — 128³ full resolution, raymarched + shaded
+    print("rendering 3D on GPU (128³ raymarch, 3 views)...")
+    try:
+        from structgen.viz.gpu_render import render_volume_views
+        view_imgs = render_volume_views(occ, res=768)
+        labels = ["front (12°,35°)", "side (12°,125°)", "perspective (28°,245°)"]
+        fig, axes = plt.subplots(1, 3, figsize=(24, 8))
+        for ax, img, label in zip(axes, view_imgs, labels):
+            ax.imshow(img)
+            ax.set_title(label, fontsize=13)
+            ax.axis("off")
+        plt.suptitle(f"GPU volume render — 128³ full res\n{cap[:60]}", fontsize=11)
+        plt.tight_layout()
+        plt.savefig(f"{outdir}/render3d.png", dpi=100)
+        plt.close()
+        print(f"saved {outdir}/render3d.png")
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        print(f"GPU render failed: {e}")
+
+    # 4) STL export (full 128³ marching cubes)
     from skimage import measure as _skm
     from structgen.model.meshing import Mesh, write_stl
-
-    occ_mc = read_nrrd(path, res=64)
-    pad = np.pad(occ_mc, 1, mode="constant", constant_values=0)
+    pad = np.pad(occ, 1, mode="constant", constant_values=0)
     try:
         verts, faces, _, _ = _skm.marching_cubes(pad, level=0.5,
-            spacing=(2/64, 2/64, 2/64))
+            spacing=(2/128, 2/128, 2/128))
+        verts = verts - 1.0
         write_stl(Mesh(verts.astype(np.float32), faces.astype(np.int64)),
                   f"{outdir}/shape.stl")
         print(f"saved {outdir}/shape.stl ({len(faces)} faces)")
-        print(f"  -> download & open at https://www.viewstl.com")
     except Exception as e:
         print(f"marching cubes/STL failed: {e}")
 
