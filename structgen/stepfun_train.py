@@ -48,6 +48,10 @@ class _TextOcc(Dataset):
         cap, path = self.items[i]
         occ = read_nrrd_occ(path, self.res)
         ids = self.tok(cap, truncation=True, max_length=self.max_len)["input_ids"]
+        # PAD to a FIXED length so every rank's forward has identical (B,S,H)
+        # — EP's MoE all_reduce requires all ranks reduce same-shape tensors.
+        pad = self.tok.pad_token_id if self.tok.pad_token_id is not None else 0
+        ids = ids + [pad] * (self.max_len - len(ids))
         return {"occ": torch.from_numpy(occ).float(), "ids": torch.tensor(ids)}
 
 
