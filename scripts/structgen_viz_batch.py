@@ -7,7 +7,7 @@ import sys, os, csv, glob, gzip
 import numpy as np
 
 
-def read_nrrd(path, res=128):
+def read_nrrd(path, res=128, threshold=0):
     raw = open(path, "rb").read()
     sep = raw.index(b"\n\n")
     arr = np.frombuffer(gzip.decompress(raw[sep + 2:]), dtype=np.uint8)
@@ -17,11 +17,14 @@ def read_nrrd(path, res=128):
         if line.startswith("sizes:"):
             parts = line.split(); ch, size = int(parts[1]), int(parts[2]); break
     arr = arr.reshape(ch, size, size, size)
-    occ = (arr[:3].max(0) > 0).astype(np.float32)
+    occ = (arr[:3].max(0) > threshold).astype(np.float32)
+    # text2shape reorientation
+    occ = np.swapaxes(occ, 0, 1)
+    occ = np.swapaxes(occ, 0, 2)
     if res < size:
         step = size // res
         occ = occ[::step, ::step, ::step]
-    return occ
+    return np.ascontiguousarray(occ)
 
 
 def main():

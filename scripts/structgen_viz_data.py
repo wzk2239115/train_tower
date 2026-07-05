@@ -7,8 +7,8 @@ import sys, os, csv, glob
 import numpy as np
 import gzip
 
-def read_nrrd(path, res=128):
-    """Read NRRD at native resolution (128³) or downsample."""
+def read_nrrd(path, res=128, threshold=0):
+    """Read NRRD with text2shape axis convention (swapaxes ×2 to stand up)."""
     raw = open(path, "rb").read()
     sep = raw.index(b"\n\n")
     arr = np.frombuffer(gzip.decompress(raw[sep+2:]), dtype=np.uint8)
@@ -18,11 +18,14 @@ def read_nrrd(path, res=128):
         if line.startswith("sizes:"):
             parts = line.split(); ch, size = int(parts[1]), int(parts[2]); break
     arr = arr.reshape(ch, size, size, size)
-    occ = (arr[:3].max(0) > 0).astype(np.float32)
+    occ = (arr[:3].max(0) > threshold).astype(np.float32)
+    # text2shape reorientation
+    occ = np.swapaxes(occ, 0, 1)
+    occ = np.swapaxes(occ, 0, 2)
     if res < size:
         step = size // res
         occ = occ[::step, ::step, ::step]
-    return occ
+    return np.ascontiguousarray(occ)
 
 def main():
     nrrd_dir = sys.argv[1] if len(sys.argv) > 1 else "data/shapenet/nrrd"
