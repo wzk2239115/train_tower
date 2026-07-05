@@ -71,9 +71,11 @@ def train(cfg: StructGenConfig, vae_path, stepfun_path, nrrd_dir, captions_csv,
         p.requires_grad_(False)
 
     n_gpu = torch.cuda.device_count() or 1
-    max_mem = {0: "60GiB"}
+    # 8xH800-80GB fully free: give ~76GiB/GPU (weights ~50 + activations).
+    # GPU0 keeps a bit more headroom for the trainable proj+head + moved hidden.
+    max_mem = {0: "68GiB"}
     for i in range(1, n_gpu):
-        max_mem[i] = "78GiB"
+        max_mem[i] = "76GiB"
     print("[sgen] loading Stepfun (device_map=auto across GPUs)...")
     sf = _build_stepfun(stepfun_path, max_mem)
     embed = _find_embed(sf)
@@ -133,9 +135,9 @@ def generate(cfg: StructGenConfig, vae_path, ckpt_path, stepfun_path, prompt,
     vae.eval()
 
     n_gpu = torch.cuda.device_count() or 1
-    max_mem = {0: "60GiB"}
+    max_mem = {0: "68GiB"}
     for i in range(1, n_gpu):
-        max_mem[i] = "78GiB"
+        max_mem[i] = "76GiB"
     sf = _build_stepfun(stepfun_path, max_mem)
     net = StepfunGenNet(sf, _find_embed(sf), _find_llm_layers(sf), C, L).to(dev)
     net.load_state_dict(torch.load(ckpt_path, map_location=dev)["net"])
