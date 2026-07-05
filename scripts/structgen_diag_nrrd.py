@@ -4,13 +4,16 @@ Run: python scripts/structgen_diag_nrrd.py data/shapenet/nrrd/XXXXX.nrrd
 """
 import sys, gzip, numpy as np
 
-path = sys.argv[1] if len(sys.argv) > 1 else None
-if not path:
-    import glob, os
-    files = sorted(glob.glob("data/shapenet/nrrd/*.nrrd"))
+import glob, os
+path = sys.argv[1] if len(sys.argv) > 1 else "data/shapenet/nrrd"
+if os.path.isdir(path):
+    files = sorted(glob.glob(os.path.join(path, "*.nrrd")))
     if not files:
-        print("usage: python scripts/structgen_diag_nrrd.py <file.nrrd>"); sys.exit(1)
+        print(f"No .nrrd in {path}"); sys.exit(1)
     path = files[0]
+elif not os.path.isfile(path):
+    print(f"usage: python scripts/structgen_diag_nrrd.py <file.nrrd | dir>")
+    sys.exit(1)
 
 raw = open(path, "rb").read()
 sep = raw.index(b"\n\n")
