@@ -39,6 +39,11 @@ def _build_cfg(args) -> StructGenConfig:
         num_blocks=args.blocks,
     )
     g = lambda n, d: getattr(args, n, d)  # noqa: E731
+    # latent / vae knobs (present on the latent subcommands; harmless default)
+    cfg.decoder.latent_res = g("latent_res", cfg.decoder.latent_res)
+    cfg.decoder.latent_ch = g("latent_ch", cfg.decoder.latent_ch)
+    cfg.decoder.vae_base = g("vae_base", cfg.decoder.vae_base)
+    cfg.decoder.flow_base = g("flow_base", cfg.decoder.flow_base)
     cfg.train = TrainConfig(
         batch_size=g("batch", 4), lr=g("lr", 1e-4), max_steps=g("steps", 5000),
         device=args.device, out_dir=g("out_dir", "outputs/structgen"),
@@ -468,6 +473,8 @@ def main(argv=None) -> int:
     v = sub.add_parser("train-vae", help="Stage A: train the voxel VAE (occ<->latent)")
     _latent_common(v)
     v.add_argument("--vae-base", type=int, default=24)
+    v.add_argument("--latent-res", type=int, default=16)
+    v.add_argument("--latent-ch", type=int, default=32)
     v.add_argument("--steps", type=int, default=20000)
     v.add_argument("--batch", type=int, default=16)
     v.add_argument("--beta", type=float, default=1e-3)
