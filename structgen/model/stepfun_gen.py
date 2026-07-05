@@ -192,30 +192,32 @@ class StepfunGenNet(nn.Module):
         emb = torch.cat([torch.cos(arg), torch.sin(arg)], -1)
         return self.t_embed_sf(emb.to(self.t_embed_sf.weight.dtype))
 
-    def forward(self, noisy_latent, t, text_ids, text_lens) -> torch.Tensor:
+    @torch.no_grad()
+    def extract(self, noisy_latent, t, text_ids):
+        """Run frozen Stepfun over the geom soft-tokens; return its multi-depth
+        geom-token features (list of (B, n_toks, hidden)). Identical across EP
+        ranks (MoE is all-reduced)."""
         B = noisy_latent.shape[0]
         L = self.latent_res
         dev = self._embed.weight.device
         for buf in self._bufs:
             buf.clear()
         self._cur_text_len = text_ids.shape[1]
-
-        mdtype = self._embed.weight.dtype              # bf16 (the frozen model)
+        mdtype = self._embed.weight.dtype
         text_emb = self._embed(text_ids.to(dev))
         g = noisy_latent.permute(0, 2, 3, 4, 1).reshape(B, L * L * L, self.latent_ch)
         g_tok = self.geom_in(g.to(dev)) + self._sf_timestep(t).to(dev).unsqueeze(1)
         inputs_embeds = torch.cat([text_emb, g_tok], dim=1).to(mdtype)
         am = torch.ones(B, inputs_embeds.shape[1], dtype=torch.long, device=dev)
         pos = torch.arange(inputs_embeds.shape[1], device=dev).unsqueeze(0).expand(B, -1)
-        # FROZEN Stepfun forward (preserves the base; no gradient into the 150B).
-        # Its computation transforms the geom tokens across all 45 layers; the
-        # large trainable decoder AFTER it reads those features (residually).
-        with torch.no_grad():
-            self._model(inputs_embeds=inputs_embeds, attention_mask=am,
-                        position_ids=pos, use_cache=False)
+        self._model(inputs_embeds=inputs_embeds, attention_mask=am,
+                    position_ids=pos, use_cache=False)
+        return [buf[0] for buf in self._bufs]
 
-        # multi-depth geom features from frozen Stepfun -> large trainable decoder
-        feats = [buf[0] for buf in self._bufs]         # list of (B, n_toks, hidden)
+    def forward(self, noisy_latent, t, text_ids, text_lens) -> torch.Tensor:
+        B = noisy_latent.shape[0]
+        L = self.latent_res
+        feats = self.extract(noisy_latent, t, text_ids)
         out = self.decoder(feats, t.to(self.decoder.proj_in[0].weight.device))
         out = out.reshape(B, L, L, L, self.latent_ch).permute(0, 4, 1, 2, 3)
         return out

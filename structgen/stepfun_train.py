@@ -16,6 +16,7 @@ import time
 from dataclasses import asdict
 
 import torch
+import torch.distributed as dist
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
@@ -56,6 +57,87 @@ def _collate(batch):
     lens = torch.tensor([b["ids"].numel() for b in batch])
     return {"occ": torch.stack([b["occ"] for b in batch])[:, None],
             "ids": ids, "lens": lens}
+
+
+def train_ep(cfg: StructGenConfig, vae_path, stepfun_path, nrrd_dir, captions_csv,
+             steps=5000, batch=2, out="outputs/structgen/sgen_ep.pt",
+             dec_dim=1024, dec_blocks=12):
+    """Expert-parallel training: 8 ranks, each holds 36 experts (all GPUs busy),
+    decoder is DDP'd. Launched via `torchrun --nproc_per_node=8`."""
+    from torch.nn.parallel import DistributedDataParallel as DDP
+    from torch.utils.data import DistributedSampler
+    from structgen.ep_stepfun import load_stepfun_ep
+    from structgen.model.stepfun_gen import StepfunGenNet, _find_embed, _find_llm_layers
+
+    rank = dist.get_rank()
+    world = dist.get_world_size()
+    local = int(os.environ.get("LOCAL_RANK", rank))
+    torch.cuda.set_device(local)
+    dev = torch.device(f"cuda:{local}")
+    R = cfg.decoder.grid_res
+    L, C = cfg.decoder.latent_res, cfg.decoder.latent_ch
+
+    vae = VoxelVAE(R, L, C, base=cfg.decoder.vae_base).to(dev)
+    vae.load_state_dict(torch.load(vae_path, map_location=dev)["vae"])
+    vae.eval()
+    for p in vae.parameters():
+        p.requires_grad_(False)
+
+    sf = load_stepfun_ep(stepfun_path)
+    net = StepfunGenNet(sf, _find_embed(sf), _find_llm_layers(sf), C, L,
+                        dec_dim=dec_dim, dec_blocks=dec_blocks)
+    # only the decoder trains → DDP it; sf + geom_in stay frozen/replicated
+    net.decoder = DDP(net.decoder.to(dev), device_ids=[local])
+    for p in net.parameters():
+        if p.requires_grad:
+            p.data = p.data.to(dev)
+
+    import transformers as _tf
+    tok = _tf.AutoTokenizer.from_pretrained(stepfun_path, trust_remote_code=True)
+    ds = _TextOcc(nrrd_dir, captions_csv, R, tok)
+    sampler = DistributedSampler(ds, num_replicas=world, rank=rank, shuffle=True)
+    loader = DataLoader(ds, batch_size=batch, sampler=sampler, num_workers=2,
+                        collate_fn=_collate, drop_last=True)
+    opt = torch.optim.AdamW([p for p in net.parameters() if p.requires_grad], lr=1e-4)
+    if rank == 0:
+        ntrain = sum(p.numel() for p in net.parameters() if p.requires_grad) / 1e6
+        print(f"[ep-train] world={world}, decoder trainable {ntrain:.1f}M, "
+              f"{len(ds)} shapes")
+
+    it = iter(loader)
+    step = 0
+    t0 = time.time()
+    while step < steps:
+        try:
+            b = next(it)
+        except StopIteration:
+            sampler.set_epoch(step // len(loader) + 1)
+            it = iter(loader)
+            b = next(it)
+        with torch.no_grad():
+            mu, _ = vae.enc(b["occ"].to(dev))
+            gt = mu
+        t = torch.rand(gt.shape[0], device=dev).clamp(0.02, 0.98)
+        noise = torch.randn_like(gt)
+        z = (1 - t)[:, None, None, None, None] * noise + t[:, None, None, None, None] * gt
+        feats = net.extract(z, t, b["ids"])                       # EP forward (frozen)
+        x0 = net.decoder(feats, t).reshape(gt.shape[0], L, L, L, C).permute(0, 4, 1, 2, 3)
+        loss = F.mse_loss(x0, gt)
+        opt.zero_grad()
+        loss.backward()
+        opt.step()
+        step += 1
+        if rank == 0 and (step % 20 == 0 or step == steps):
+            print(f"[ep-train] step {step}/{steps} mse={loss.item():.4f} "
+                  f"dt={(time.time()-t0)/step:.2f}s/it")
+        if rank == 0 and (step % 500 == 0 or step == steps):
+            os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+            torch.save({"decoder": net.decoder.state_dict(),
+                        "geom_in": net.geom_in.state_dict(),
+                        "vae_path": vae_path, "cfg": __import__("dataclasses").asdict(cfg)},
+                       out)
+            print(f"  saved {out}")
+    return out
 
 
 def train(cfg: StructGenConfig, vae_path, stepfun_path, nrrd_dir, captions_csv,
