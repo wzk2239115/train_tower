@@ -136,9 +136,11 @@ def train_ep(cfg: StructGenConfig, vae_path, stepfun_path, nrrd_dir, captions_cs
                   f"dt={(time.time()-t0)/step:.2f}s/it")
         if rank == 0 and (step % 500 == 0 or step == steps):
             os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
-            torch.save({"decoder": net.decoder.state_dict(),
+            dec = net.decoder.module if hasattr(net.decoder, "module") else net.decoder
+            torch.save({"decoder": dec.state_dict(),
                         "geom_in": net.geom_in.state_dict(),
-                        "vae_path": vae_path, "cfg": __import__("dataclasses").asdict(cfg)},
+                        "dec_dim": dec_dim, "dec_blocks": dec_blocks,
+                        "vae_path": vae_path, "cfg": asdict(cfg)},
                        out)
             print(f"  saved {out}")
     return out
@@ -228,8 +230,17 @@ def generate(cfg: StructGenConfig, vae_path, ckpt_path, stepfun_path, prompt,
     for i in range(1, n_gpu):
         max_mem[i] = "76GiB"
     sf = _build_stepfun(stepfun_path, max_mem)
-    net = StepfunGenNet(sf, _find_embed(sf), _find_llm_layers(sf), C, L).to(dev)
-    net.load_state_dict(torch.load(ckpt_path, map_location=dev)["net"])
+    state = torch.load(ckpt_path, map_location=dev, weights_only=False)
+    dec_dim = state.get("dec_dim", 1024)
+    dec_blocks = state.get("dec_blocks", 12)
+    net = StepfunGenNet(sf, _find_embed(sf), _find_llm_layers(sf), C, L,
+                        dec_dim=dec_dim, dec_blocks=dec_blocks).to(dev)
+    if "decoder" in state:                       # EP checkpoint
+        dec_sd = {k.replace("module.", ""): v for k, v in state["decoder"].items()}
+        net.decoder.load_state_dict(dec_sd)
+        net.geom_in.load_state_dict(state["geom_in"])
+    else:                                        # legacy single-process ckpt
+        net.load_state_dict(state["net"])
     net.eval()
     import transformers as _tf
     tok = _tf.AutoTokenizer.from_pretrained(stepfun_path, trust_remote_code=True)
