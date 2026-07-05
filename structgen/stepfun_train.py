@@ -59,7 +59,8 @@ def _collate(batch):
 
 
 def train(cfg: StructGenConfig, vae_path, stepfun_path, nrrd_dir, captions_csv,
-          steps=5000, batch=2, out="outputs/structgen/stepfun_gen.pt"):
+          steps=5000, batch=2, out="outputs/structgen/stepfun_gen.pt",
+          dec_dim=1024, dec_blocks=12):
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     R = cfg.decoder.grid_res
     L, C = cfg.decoder.latent_res, cfg.decoder.latent_ch
@@ -81,7 +82,8 @@ def train(cfg: StructGenConfig, vae_path, stepfun_path, nrrd_dir, captions_csv,
     sf = _build_stepfun(stepfun_path, max_mem)
     embed = _find_embed(sf)
     llm_layers = _find_llm_layers(sf)
-    net = StepfunGenNet(sf, embed, llm_layers, C, L).to(dev)
+    net = StepfunGenNet(sf, embed, llm_layers, C, L,
+                        dec_dim=dec_dim, dec_blocks=dec_blocks).to(dev)
     ntrain = sum(p.numel() for p in net.parameters() if p.requires_grad) / 1e6
     print(f"[sgen] Stepfun on {n_gpu} GPU(s); trainable params {ntrain:.2f}M "
           f"(proj+head; 150B frozen)")

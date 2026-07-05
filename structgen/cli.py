@@ -205,7 +205,8 @@ def cmd_train_stepfun_gen(args) -> int:
     cfg.decoder.latent_ch = args.latent_ch
     cfg.decoder.vae_base = args.vae_base
     sg_train(cfg, args.vae, args.pretrained_path, args.nrrd_dir, args.captions,
-             steps=args.steps, batch=args.batch, out=args.out)
+             steps=args.steps, batch=args.batch, out=args.out,
+             dec_dim=args.dec_dim, dec_blocks=args.dec_blocks)
     return 0
 
 
@@ -513,6 +514,8 @@ def main(argv=None) -> int:
     sg.add_argument("--vae-base", type=int, default=24)
     sg.add_argument("--steps", type=int, default=5000)
     sg.add_argument("--batch", type=int, default=2)
+    sg.add_argument("--dec-dim", type=int, default=1024, help="trainable decoder width")
+    sg.add_argument("--dec-blocks", type=int, default=12, help="trainable decoder depth")
     sg.add_argument("--out", default="outputs/structgen/stepfun_gen.pt")
     sg.set_defaults(func=cmd_train_stepfun_gen)
 
